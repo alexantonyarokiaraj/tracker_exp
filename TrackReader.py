@@ -143,6 +143,10 @@ for entries in myTree:
                         graph_xy.SetTitle("XY Projection")
                         graph_xy.GetXaxis().SetTitle("X (mm)")
                         graph_xy.GetYaxis().SetTitle("Y (mm)")
+                        # Set axis limits from RunParameters
+                        graph_xy.GetXaxis().SetLimits(RunParameters.x_start_bin.value, RunParameters.x_end_bin.value)
+                        graph_xy.SetMinimum(RunParameters.y_start_bin.value)
+                        graph_xy.SetMaximum(RunParameters.y_end_bin.value)
                     else:
                         graph_xy.Draw("P same")
                     graphs_xy.append(graph_xy)
@@ -170,6 +174,10 @@ for entries in myTree:
                         graph_yz.SetTitle("YZ Projection")
                         graph_yz.GetXaxis().SetTitle("Y (mm)")
                         graph_yz.GetYaxis().SetTitle("Z (mm)")
+                        # Set axis limits from RunParameters
+                        graph_yz.GetXaxis().SetLimits(RunParameters.y_start_bin.value, RunParameters.y_end_bin.value)
+                        graph_yz.SetMinimum(RunParameters.z_start_bin.value)
+                        graph_yz.SetMaximum(RunParameters.z_end_bin.value)
                     else:
                         graph_yz.Draw("P same")
                     graphs_yz.append(graph_yz)
@@ -197,6 +205,10 @@ for entries in myTree:
                         graph_xz.SetTitle("XZ Projection")
                         graph_xz.GetXaxis().SetTitle("X (mm)")
                         graph_xz.GetYaxis().SetTitle("Z (mm)")
+                        # Set axis limits from RunParameters
+                        graph_xz.GetXaxis().SetLimits(RunParameters.x_start_bin.value, RunParameters.x_end_bin.value)
+                        graph_xz.SetMinimum(RunParameters.z_start_bin.value)
+                        graph_xz.SetMaximum(RunParameters.z_end_bin.value)
                     else:
                         graph_xz.Draw("P same")
                     graphs_xz.append(graph_xz)
