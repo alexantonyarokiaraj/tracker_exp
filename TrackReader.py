@@ -1,9 +1,10 @@
 import sys
 import argparse
-from libraries import RunParameters
+from libraries import RunParameters, SCAN
 import ROOT as root
 import numpy as np
 from ROOT import gROOT, gSystem, TH2F, TTree, TFile, AddressOf, TLine, TMultiGraph, TEllipse, TH1F, TH3F, TNtuple
+from helper_functions.functions import dbcluster
 
 # Command-line argument parsing
 parser = argparse.ArgumentParser(description='Process events from a ROOT file.')
@@ -73,7 +74,8 @@ for entries in myTree:
         print("---------------------------")
         print("Event-", entries.data.event)
         print("Timestamp-", entries.data.timestamp)
-        print("---------------------------")        
+        print("---------------------------") 
+        data_points = []       
         for x in range(length):
             co = entries.data.CoboAsad[x].globalchannelid >> 11
             if co != 31 and co != 16:
@@ -91,16 +93,118 @@ for entries in myTree:
                         XY.Fill(posX, posY, Qvox)
                         XZ.Fill(posX, posZ, Qvox)
                         YZ.Fill(posY, posZ, Qvox)        
-                        z_proj.Fill(entries.data.CoboAsad[int(x)].peaktime[int(y)])                                                        
+                        z_proj.Fill(entries.data.CoboAsad[int(x)].peaktime[int(y)])     
+                        data_points.append([posX, posY, posZ, Qvox])                                                   
+        data_points_3d = np.array(data_points)
+        
+        # Call DBSCAN clustering
+        if len(data_points_3d) > 0:
+            dbscan_labels, valid_cluster, epsilon_ = dbcluster(
+                data_points_3d,
+                SCAN.N_PROC.value,
+                SCAN.NN_NEIGHBOR.value,
+                SCAN.NN_RADIUS.value,
+                SCAN.DB_MIN_SAMPLES.value,
+                SCAN.SENSITIVITY.value,
+                SCAN.EPS_THRESHOLD.value,
+                SCAN.EPS_MODE.value
+            )
+        
         if not batch_mode:
-            c1.cd(1)          
-            XY.Draw('colz')
+            # Create graphs colored by DBSCAN labels
+            unique_labels = np.unique(dbscan_labels)
+            colors = [root.kBlue, root.kRed, root.kGreen, root.kMagenta, root.kCyan, root.kYellow, root.kBlack, root.kGray]
+            
+            # Store graph objects to prevent garbage collection
+            graphs_xy = []
+            graphs_yz = []
+            graphs_xz = []
+            
+            # XY projection
+            c1.cd(1)
+            for label_idx, label in enumerate(unique_labels):
+                mask = dbscan_labels == label
+                if label == -1:  # Noise points
+                    color = root.kGray
+                else:
+                    color = colors[label_idx % len(colors)]
+                
+                points_xy = data_points_3d[mask]
+                if len(points_xy) > 0:
+                    graph_xy = root.TGraph(len(points_xy))
+                    for i, point in enumerate(points_xy):
+                        graph_xy.SetPoint(i, point[0], point[1])
+                    
+                    graph_xy.SetMarkerColor(color)
+                    graph_xy.SetMarkerStyle(20)
+                    graph_xy.SetMarkerSize(0.8)
+                    if label_idx == 0:
+                        graph_xy.Draw("AP")
+                        graph_xy.SetTitle("XY Projection")
+                        graph_xy.GetXaxis().SetTitle("X (mm)")
+                        graph_xy.GetYaxis().SetTitle("Y (mm)")
+                    else:
+                        graph_xy.Draw("P same")
+                    graphs_xy.append(graph_xy)
+            
+            # YZ projection
             c1.cd(2)
-            YZ.Draw('colz')
+            for label_idx, label in enumerate(unique_labels):
+                mask = dbscan_labels == label
+                if label == -1:  # Noise points
+                    color = root.kGray
+                else:
+                    color = colors[label_idx % len(colors)]
+                
+                points_yz = data_points_3d[mask]
+                if len(points_yz) > 0:
+                    graph_yz = root.TGraph(len(points_yz))
+                    for i, point in enumerate(points_yz):
+                        graph_yz.SetPoint(i, point[1], point[2])
+                    
+                    graph_yz.SetMarkerColor(color)
+                    graph_yz.SetMarkerStyle(20)
+                    graph_yz.SetMarkerSize(0.8)
+                    if label_idx == 0:
+                        graph_yz.Draw("AP")
+                        graph_yz.SetTitle("YZ Projection")
+                        graph_yz.GetXaxis().SetTitle("Y (mm)")
+                        graph_yz.GetYaxis().SetTitle("Z (mm)")
+                    else:
+                        graph_yz.Draw("P same")
+                    graphs_yz.append(graph_yz)
+            
+            # XZ projection
             c1.cd(3)
-            XZ.Draw('colz')
+            for label_idx, label in enumerate(unique_labels):
+                mask = dbscan_labels == label
+                if label == -1:  # Noise points
+                    color = root.kGray
+                else:
+                    color = colors[label_idx % len(colors)]
+                
+                points_xz = data_points_3d[mask]
+                if len(points_xz) > 0:
+                    graph_xz = root.TGraph(len(points_xz))
+                    for i, point in enumerate(points_xz):
+                        graph_xz.SetPoint(i, point[0], point[2])
+                    
+                    graph_xz.SetMarkerColor(color)
+                    graph_xz.SetMarkerStyle(20)
+                    graph_xz.SetMarkerSize(0.8)
+                    if label_idx == 0:
+                        graph_xz.Draw("AP")
+                        graph_xz.SetTitle("XZ Projection")
+                        graph_xz.GetXaxis().SetTitle("X (mm)")
+                        graph_xz.GetYaxis().SetTitle("Z (mm)")
+                    else:
+                        graph_xz.Draw("P same")
+                    graphs_xz.append(graph_xz)
+            
+            # Z projection histogram
             c1.cd(4)
             z_proj.Draw()
+            
             c1.Update()
             c1.WaitPrimitive()
           
