@@ -1,10 +1,12 @@
 import sys
 import argparse
-from libraries import RunParameters, SCAN
+from libraries import RunParameters, SCAN, DataArray, Optimize, RansacParameters
 import ROOT as root
 import numpy as np
 from ROOT import gROOT, gSystem, TH2F, TTree, TFile, AddressOf, TLine, TMultiGraph, TEllipse, TH1F, TH3F, TNtuple
-from helper_functions.functions import dbcluster
+from helper_functions.functions import dbcluster, plot_3d_projections, hierarchical_clustering_with_responsibilities
+from regularize import Regularize
+from ransac import find_multiple_lines_ransac
 
 # Command-line argument parsing
 parser = argparse.ArgumentParser(description='Process events from a ROOT file.')
@@ -18,10 +20,6 @@ start_event, end_event = map(int, event_range.split('_'))
 sys.path.append(RunParameters.lib_path.value)
 
 batch_mode = False  # Execute without showing any ROOT or Python Plots
-
-if not batch_mode:
-    c1 = root.TCanvas('c1', 'Events', 800, 600)
-    c1.Divide(2, 2)
 
 #########################################################################################
 ############################LINKING ROOT INTERFACES######################################
@@ -60,12 +58,14 @@ tree_tracks = TTree('tracks', 'Tree containing Tracks found through clustering')
 missed_pads = np.loadtxt(RunParameters.missing_pads_info.value)
 x_pos = missed_pads[:,0]
 y_pos = missed_pads[:,1]
-good_events = [2, 19, 21, 33, 34, 37, 44, 46, 48, 49, 51, 57, 59, 60, 66, 68, 70, 75, 78, 79, 81, 84, 88, 90, 91, 92,
-               95, 101, 108, 112, 114, 122]
+# good_events = [2, 19, 21, 33, 34, 37, 44, 46, 48, 49, 51, 57, 59, 60, 66, 68, 70, 75, 78, 79, 81, 84, 88, 90, 91, 92,
+                # 95, 101, 108, 112, 114, 122]
+
+good_events = [101]
 
 # Looping entries from Tree
 for entries in myTree:
-    if start_event <= entries.data.event <= end_event:  # Check if event is within the specified range
+    if entries.data.event in good_events: #if start_event <= entries.data.event <= end_event:  # Check if event is within the specified range
         XY.Reset()
         YZ.Reset()
         XZ.Reset()
@@ -109,114 +109,68 @@ for entries in myTree:
                 SCAN.EPS_THRESHOLD.value,
                 SCAN.EPS_MODE.value
             )
+            
+            # Add DBSCAN labels to the data array
+            data_points_3d = np.column_stack((data_points_3d, dbscan_labels))
+            
+            # Call hierarchical clustering with GMM (pass only X, Y, Z, Q columns)
+            gmm_labels, n_comp, responsibilities, dbscan_labels_gmm, elapsed_dbscan, elapsed_gmm = hierarchical_clustering_with_responsibilities(data_points_3d[:, :4], max_components=10)
+            
+            # Add GMM labels to the data array
+            data_points_3d = np.column_stack((data_points_3d, gmm_labels))
+            
+            # Call Regularize to merge GMM labels
+            reg = Regularize(data_array=data_points_3d, threshold=Optimize.P_VALUE.value, merge_type='p_value', merge_algorithm='gmm')
+            final_clusters = reg.merge_labels()
+            
+            # Add regularized labels to the data array
+            data_points_3d = np.column_stack((data_points_3d, final_clusters))
+            
+            # Call RANSAC on non-noise points only
+            dbscan_labels_full = data_points_3d[:, DataArray.DBSCAN.value].astype(int)
+            non_noise_mask = dbscan_labels_full != -1
+            non_noise_data = data_points_3d[non_noise_mask]
+            
+            ransac_labels_full = -1 * np.ones(len(data_points_3d), dtype=int)
+            
+            if len(non_noise_data) > 0:
+                ransac_labels_non_noise, fitted_models = find_multiple_lines_ransac(
+                    non_noise_data[:, :3],  # Use only X, Y, Z columns
+                    max_lines=RansacParameters.MAX_LINES.value,
+                    residual_threshold=RansacParameters.RESIDUAL_THRESHOLD.value,
+                    n_iterations=RansacParameters.N_ITERATIONS.value,
+                    min_samples=RansacParameters.MIN_SAMPLES.value,
+                    min_inliers=RansacParameters.MIN_INLIERS.value
+                )
+                # Map ransac labels back to full array
+                ransac_labels_full[non_noise_mask] = ransac_labels_non_noise
+            
+            # Add RANSAC labels to the data array
+            data_points_3d = np.column_stack((data_points_3d, ransac_labels_full))
+            
+            # Print the number of unique RANSAC labels
+            unique_ransac_labels = np.unique(ransac_labels_full[ransac_labels_full != -1])
+            print(f"Number of unique RANSAC labels (excluding noise): {len(unique_ransac_labels)}")
         
-        if not batch_mode:
-            # Create graphs colored by DBSCAN labels
-            unique_labels = np.unique(dbscan_labels)
-            colors = [root.kBlue, root.kRed, root.kGreen, root.kMagenta, root.kCyan, root.kYellow, root.kBlack, root.kGray]
-            
-            # Store graph objects to prevent garbage collection
-            graphs_xy = []
-            graphs_yz = []
-            graphs_xz = []
-            
-            # XY projection
-            c1.cd(1)
-            for label_idx, label in enumerate(unique_labels):
-                mask = dbscan_labels == label
-                if label == -1:  # Noise points
-                    color = root.kGray
-                else:
-                    color = colors[label_idx % len(colors)]
+            if not batch_mode:
+                c1 = root.TCanvas('c1', 'Clustering Comparison: DBSCAN, GMM, Regularized, RANSAC', 1200, 1300)
+                c1.Divide(3, 4)
                 
-                points_xy = data_points_3d[mask]
-                if len(points_xy) > 0:
-                    graph_xy = root.TGraph(len(points_xy))
-                    for i, point in enumerate(points_xy):
-                        graph_xy.SetPoint(i, point[0], point[1])
-                    
-                    graph_xy.SetMarkerColor(color)
-                    graph_xy.SetMarkerStyle(20)
-                    graph_xy.SetMarkerSize(0.8)
-                    if label_idx == 0:
-                        graph_xy.Draw("AP")
-                        graph_xy.SetTitle("XY Projection")
-                        graph_xy.GetXaxis().SetTitle("X (mm)")
-                        graph_xy.GetYaxis().SetTitle("Y (mm)")
-                        # Set axis limits from RunParameters
-                        graph_xy.GetXaxis().SetLimits(RunParameters.x_start_bin.value, RunParameters.x_end_bin.value)
-                        graph_xy.SetMinimum(RunParameters.y_start_bin.value)
-                        graph_xy.SetMaximum(RunParameters.y_end_bin.value)
-                    else:
-                        graph_xy.Draw("P same")
-                    graphs_xy.append(graph_xy)
-            
-            # YZ projection
-            c1.cd(2)
-            for label_idx, label in enumerate(unique_labels):
-                mask = dbscan_labels == label
-                if label == -1:  # Noise points
-                    color = root.kGray
-                else:
-                    color = colors[label_idx % len(colors)]
+                # Set to None to plot all labels, or specify a label number (e.g., 61) to plot only that label
+                filter_label = None
                 
-                points_yz = data_points_3d[mask]
-                if len(points_yz) > 0:
-                    graph_yz = root.TGraph(len(points_yz))
-                    for i, point in enumerate(points_yz):
-                        graph_yz.SetPoint(i, point[1], point[2])
-                    
-                    graph_yz.SetMarkerColor(color)
-                    graph_yz.SetMarkerStyle(20)
-                    graph_yz.SetMarkerSize(0.8)
-                    if label_idx == 0:
-                        graph_yz.Draw("AP")
-                        graph_yz.SetTitle("YZ Projection")
-                        graph_yz.GetXaxis().SetTitle("Y (mm)")
-                        graph_yz.GetYaxis().SetTitle("Z (mm)")
-                        # Set axis limits from RunParameters
-                        graph_yz.GetXaxis().SetLimits(RunParameters.y_start_bin.value, RunParameters.y_end_bin.value)
-                        graph_yz.SetMinimum(RunParameters.z_start_bin.value)
-                        graph_yz.SetMaximum(RunParameters.z_end_bin.value)
-                    else:
-                        graph_yz.Draw("P same")
-                    graphs_yz.append(graph_yz)
-            
-            # XZ projection
-            c1.cd(3)
-            for label_idx, label in enumerate(unique_labels):
-                mask = dbscan_labels == label
-                if label == -1:  # Noise points
-                    color = root.kGray
-                else:
-                    color = colors[label_idx % len(colors)]
+                # Row 1: DBSCAN labels (XY, YZ, XZ)
+                graphs_dbscan = plot_3d_projections(data_points_3d, DataArray.DBSCAN, c1, [1, 2, 3], filter_label=filter_label)
                 
-                points_xz = data_points_3d[mask]
-                if len(points_xz) > 0:
-                    graph_xz = root.TGraph(len(points_xz))
-                    for i, point in enumerate(points_xz):
-                        graph_xz.SetPoint(i, point[0], point[2])
-                    
-                    graph_xz.SetMarkerColor(color)
-                    graph_xz.SetMarkerStyle(20)
-                    graph_xz.SetMarkerSize(0.8)
-                    if label_idx == 0:
-                        graph_xz.Draw("AP")
-                        graph_xz.SetTitle("XZ Projection")
-                        graph_xz.GetXaxis().SetTitle("X (mm)")
-                        graph_xz.GetYaxis().SetTitle("Z (mm)")
-                        # Set axis limits from RunParameters
-                        graph_xz.GetXaxis().SetLimits(RunParameters.x_start_bin.value, RunParameters.x_end_bin.value)
-                        graph_xz.SetMinimum(RunParameters.z_start_bin.value)
-                        graph_xz.SetMaximum(RunParameters.z_end_bin.value)
-                    else:
-                        graph_xz.Draw("P same")
-                    graphs_xz.append(graph_xz)
-            
-            # Z projection histogram
-            c1.cd(4)
-            z_proj.Draw()
-            
-            c1.Update()
-            c1.WaitPrimitive()
-          
+                # Row 2: GMM labels (XY, YZ, XZ)
+                graphs_gmm = plot_3d_projections(data_points_3d, DataArray.GMM, c1, [4, 5, 6], filter_label=filter_label)
+                
+                # Row 3: Regularized labels (XY, YZ, XZ)
+                graphs_reg = plot_3d_projections(data_points_3d, DataArray.REGULARIZED, c1, [7, 8, 9], filter_label=filter_label)
+                
+                # Row 4: RANSAC labels (XY, YZ, XZ)
+                graphs_ransac = plot_3d_projections(data_points_3d, DataArray.RANSAC, c1, [10, 11, 12], filter_label=filter_label)
+                
+                c1.Update()
+                # c1.SaveAs(f"images/event_{entries.data.event}.png")
+                c1.WaitPrimitive()

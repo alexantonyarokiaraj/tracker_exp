@@ -5,7 +5,10 @@ class DataArray(Enum):
     Y = 1
     Z = 2
     Q = 3   
-
+    DBSCAN = 4
+    GMM = 5
+    REGULARIZED = 6
+    RANSAC = 7
 class RunParameters(Enum):
     lib_path = '/home2/user/u0100486/linux/doctorate/github/tracker_exp/lib/'
     files_path = '/home2/user/u0100486/linux/doctorate/DATA/EXPERIMENTAL/e780/'
@@ -24,7 +27,7 @@ class RunParameters(Enum):
     z_start_bin = 0 * z_conversion_factor
     z_end_bin = 512 * z_conversion_factor
     lookup_table = "LT_GANIL_NewCF_marine.dat"
-    missing_pads_info = "HitResponses.dat"
+    missing_pads_info = "HitResponses.dat"    
     NB_COBO = 16
     NB_ASAD = 4
     NB_AGET = 4
@@ -38,3 +41,13 @@ class SCAN(Enum):
     EPS_THRESHOLD = 4.0
     EPS_MODE = 7.0
 
+class Optimize(Enum):
+    P_VALUE = 0.1
+    LOW_ENERGY_THRESHOLD = 15
+
+class RansacParameters(Enum):
+    MAX_LINES = 100
+    RESIDUAL_THRESHOLD = 5.0
+    N_ITERATIONS = 5000
+    MIN_SAMPLES = 2
+    MIN_INLIERS = 10
