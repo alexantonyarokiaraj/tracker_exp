@@ -9,6 +9,13 @@ class DataArray(Enum):
     GMM = 5
     REGULARIZED = 6
     RANSAC = 7
+    REGULARIZED_TRACK_TYPE = 8
+    RANSAC_TRACK_TYPE = 9
+    REGULARIZED_BEAM_MERGED = 10
+    RANSAC_BEAM_MERGED = 11
+    REGULARIZED_SIDE = 12
+    RANSAC_SIDE = 13
+    
 class RunParameters(Enum):
     lib_path = '/home2/user/u0100486/linux/doctorate/github/tracker_exp/lib/'
     files_path = '/home2/user/u0100486/linux/doctorate/DATA/EXPERIMENTAL/e780/'
@@ -32,6 +39,7 @@ class RunParameters(Enum):
     NB_ASAD = 4
     NB_AGET = 4
     NB_CHANNEL = 68
+    MIN_CLUSTER_SIZE_BEAM_MERGED = 10
 class SCAN(Enum):
     N_PROC = 1
     NN_NEIGHBOR = 6
@@ -44,6 +52,7 @@ class SCAN(Enum):
 class Optimize(Enum):
     P_VALUE = 0.1
     LOW_ENERGY_THRESHOLD = 15
+    BEAM_Z_MERGE_THRESHOLD_MM = 20.0
 
 class RansacParameters(Enum):
     MAX_LINES = 100
@@ -51,3 +60,10 @@ class RansacParameters(Enum):
     N_ITERATIONS = 5000
     MIN_SAMPLES = 2
     MIN_INLIERS = 10
+
+class VolumeBoundaries(Enum):
+    VOLUME_MIN = 10
+    VOLUME_MAX = 246
+    BEAM_ZONE_MIN = 122
+    BEAM_ZONE_MAX = 132
+    BEAM_CENTER = 128
