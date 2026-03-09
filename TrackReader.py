@@ -251,10 +251,12 @@ for entries in myTree:
 
             ransac_track_types = data_points_3d[:, DataArray.RANSAC_TRACK_TYPE.value].astype(int)
             ransac_side_values = data_points_3d[:, DataArray.RANSAC_SIDE.value].astype(int)
+            ransac_bm_labels_for_merge = data_points_3d[:, DataArray.RANSAC_BEAM_MERGED.value].astype(int)
 
             scattered_mask = ransac_track_types == 1
-            above_mask = scattered_mask & (ransac_side_values == 1)
-            below_mask = scattered_mask & (ransac_side_values == -1)
+            valid_label_mask = (ransac_bm_labels_for_merge != -1) & (ransac_bm_labels_for_merge != -20)
+            above_mask = scattered_mask & valid_label_mask & (ransac_side_values == 1)
+            below_mask = scattered_mask & valid_label_mask & (ransac_side_values == -1)
 
             def _directions_xy(track_xyz):
                 return get_directions(track_xyz, include_z=False)
@@ -281,6 +283,7 @@ for entries in myTree:
                     merge_algorithm='ransac',
                     func=_directions_xy,
                     label_column=DataArray.RANSAC_BEAM_MERGED,
+                    print_g_matrix=True,
                 )
                 merged_above = reg_above.merge_labels().astype(int)
                 merged_above, highest_label = _offset_labels(merged_above, highest_label)
@@ -295,12 +298,65 @@ for entries in myTree:
                     merge_algorithm='ransac',
                     func=_directions_xy,
                     label_column=DataArray.RANSAC_BEAM_MERGED,
+                    print_g_matrix=True,
                 )
                 merged_below = reg_below.merge_labels().astype(int)
                 merged_below, highest_label = _offset_labels(merged_below, highest_label)
                 ransac_cdist_labels[below_mask] = merged_below
 
             data_points_3d = np.column_stack((data_points_3d, ransac_cdist_labels))
+
+            # Additional scattered-track merging using cdist for REGULARIZED_BEAM_MERGED (above/below separately)
+            # Output labels go into a new column: DataArray.REGULARIZED_CDIST
+            reg_cdist_labels = data_points_3d[:, DataArray.REGULARIZED_BEAM_MERGED.value].astype(int).copy()
+
+            reg_track_types = data_points_3d[:, DataArray.REGULARIZED_TRACK_TYPE.value].astype(int)
+            reg_side_values = data_points_3d[:, DataArray.REGULARIZED_SIDE.value].astype(int)
+            reg_bm_labels_for_merge = data_points_3d[:, DataArray.REGULARIZED_BEAM_MERGED.value].astype(int)
+
+            reg_scattered_mask = reg_track_types == 1
+            reg_valid_label_mask = reg_bm_labels_for_merge != -1
+            reg_above_mask = reg_scattered_mask & reg_valid_label_mask & (reg_side_values == 1)
+            reg_below_mask = reg_scattered_mask & reg_valid_label_mask & (reg_side_values == -1)
+
+            valid_existing_reg = reg_cdist_labels[reg_cdist_labels != -1]
+            reg_highest_label = int(np.max(valid_existing_reg) + 1) if valid_existing_reg.size else 0
+
+            if np.any(reg_above_mask):
+                reg_subset_above = data_points_3d[reg_above_mask].copy()
+                reg_above = Regularize(
+                    data_array=reg_subset_above,
+                    low_energy_threshold=Optimize.C_DIST.value,
+                    merge_type='cdist',
+                    merge_algorithm='gmm',
+                    func=_directions_xy,
+                    label_column=DataArray.REGULARIZED_BEAM_MERGED,
+                    print_g_matrix=True,
+                )
+                reg_merged_above = reg_above.merge_labels().astype(int)
+                reg_merged_above, reg_highest_label = _offset_labels(
+                    reg_merged_above, reg_highest_label, noise_labels=(-1,)
+                )
+                reg_cdist_labels[reg_above_mask] = reg_merged_above
+
+            if np.any(reg_below_mask):
+                reg_subset_below = data_points_3d[reg_below_mask].copy()
+                reg_below = Regularize(
+                    data_array=reg_subset_below,
+                    low_energy_threshold=Optimize.C_DIST.value,
+                    merge_type='cdist',
+                    merge_algorithm='gmm',
+                    func=_directions_xy,
+                    label_column=DataArray.REGULARIZED_BEAM_MERGED,
+                    print_g_matrix=True,
+                )
+                reg_merged_below = reg_below.merge_labels().astype(int)
+                reg_merged_below, reg_highest_label = _offset_labels(
+                    reg_merged_below, reg_highest_label, noise_labels=(-1,)
+                )
+                reg_cdist_labels[reg_below_mask] = reg_merged_below
+
+            data_points_3d = np.column_stack((data_points_3d, reg_cdist_labels))
 
             event_id = int(entries.data.event)
 
@@ -394,14 +450,14 @@ for entries in myTree:
                 # Row 2: GMM labels (XY, YZ, XZ)
                 graphs_gmm = plot_3d_projections(data_points_3d, DataArray.GMM, c1, [4, 5, 6], filter_label=filter_label)
                 
-                # Row 3: Regularized Beam Merged labels (XY, YZ, XZ)
-                graphs_reg = plot_3d_projections(data_points_3d, DataArray.REGULARIZED_BEAM_MERGED, c1, [7, 8, 9], filter_label=filter_label)
+                # Row 3: Regularized cdist-merged labels (XY, YZ, XZ)
+                graphs_reg = plot_3d_projections(data_points_3d, DataArray.REGULARIZED_CDIST, c1, [7, 8, 9], filter_label=filter_label)
 
                 # Scattered Regularized tracks: plot PCA-based (XY only) start/end markers on pad 7
                 # Color: side=1 (above) -> red, else -> black
                 # Marker: start=cross, end=circle
                 reg_track_types = data_points_3d[:, DataArray.REGULARIZED_TRACK_TYPE.value].astype(int)
-                reg_bm_labels = data_points_3d[:, DataArray.REGULARIZED_BEAM_MERGED.value].astype(int)
+                reg_bm_labels = data_points_3d[:, DataArray.REGULARIZED_CDIST.value].astype(int)
                 reg_side = data_points_3d[:, DataArray.REGULARIZED_SIDE.value].astype(int)
 
                 scattered_labels = np.unique(reg_bm_labels[(reg_bm_labels != -1) & (reg_track_types == 1)])
@@ -437,7 +493,7 @@ for entries in myTree:
                 # Row 4: RANSAC cdist-merged labels (XY, YZ, XZ)
                 graphs_ransac = plot_3d_projections(data_points_3d, DataArray.RANSAC_CDIST, c1, [10, 11, 12], filter_label=filter_label)
 
-                # Scattered RANSAC tracks: plot PCA-based (XY only) start/end markers on pad 10
+                # Scattered RANSAC tracks: plot PCA-based (XYZ) start/end markers on pads 10/11/12
                 # Color: side=1 (above) -> red, else -> black
                 # Marker: square (start=open square, end=filled square)
                 ransac_track_types = data_points_3d[:, DataArray.RANSAC_TRACK_TYPE.value].astype(int)
@@ -449,32 +505,61 @@ for entries in myTree:
                 )
                 ransac_scattered_markers = []
 
-                c1.cd(10)
                 for cluster_label in map(int, ransac_scattered_labels):
                     cluster_mask = (ransac_bm_labels == cluster_label) & (ransac_track_types == 1)
-                    points_xy = data_points_3d[cluster_mask][:, [DataArray.X.value, DataArray.Y.value]]
-                    if points_xy.shape[0] < 2:
+                    points_xyz = data_points_3d[cluster_mask][:, [DataArray.X.value, DataArray.Y.value, DataArray.Z.value]]
+                    if points_xyz.shape[0] < 2:
                         continue
 
                     try:
-                        end_point, start_point, *_ = get_directions(points_xy, include_z=False)
+                        end_point, start_point, *_ = get_directions(points_xyz, include_z=True)
                     except Exception:
                         continue
 
                     side_value = int(ransac_side[cluster_mask][0]) if np.any(cluster_mask) else 0
                     marker_color = root.kRed if side_value == 1 else root.kBlack
 
-                    start_marker = root.TMarker(float(start_point[0]), float(start_point[1]), 25)
-                    start_marker.SetMarkerColor(marker_color)
-                    start_marker.SetMarkerSize(1.3)
-                    start_marker.Draw()
-                    ransac_scattered_markers.append(start_marker)
+                    # XY (pad 10)
+                    c1.cd(10)
+                    start_marker_xy = root.TMarker(float(start_point[0]), float(start_point[1]), 25)
+                    start_marker_xy.SetMarkerColor(marker_color)
+                    start_marker_xy.SetMarkerSize(1.3)
+                    start_marker_xy.Draw()
+                    ransac_scattered_markers.append(start_marker_xy)
 
-                    end_marker = root.TMarker(float(end_point[0]), float(end_point[1]), 21)
-                    end_marker.SetMarkerColor(marker_color)
-                    end_marker.SetMarkerSize(1.3)
-                    end_marker.Draw()
-                    ransac_scattered_markers.append(end_marker)
+                    end_marker_xy = root.TMarker(float(end_point[0]), float(end_point[1]), 21)
+                    end_marker_xy.SetMarkerColor(marker_color)
+                    end_marker_xy.SetMarkerSize(1.3)
+                    end_marker_xy.Draw()
+                    ransac_scattered_markers.append(end_marker_xy)
+
+                    # YZ (pad 11)
+                    c1.cd(11)
+                    start_marker_yz = root.TMarker(float(start_point[1]), float(start_point[2]), 25)
+                    start_marker_yz.SetMarkerColor(marker_color)
+                    start_marker_yz.SetMarkerSize(1.3)
+                    start_marker_yz.Draw()
+                    ransac_scattered_markers.append(start_marker_yz)
+
+                    end_marker_yz = root.TMarker(float(end_point[1]), float(end_point[2]), 21)
+                    end_marker_yz.SetMarkerColor(marker_color)
+                    end_marker_yz.SetMarkerSize(1.3)
+                    end_marker_yz.Draw()
+                    ransac_scattered_markers.append(end_marker_yz)
+
+                    # XZ (pad 12)
+                    c1.cd(12)
+                    start_marker_xz = root.TMarker(float(start_point[0]), float(start_point[2]), 25)
+                    start_marker_xz.SetMarkerColor(marker_color)
+                    start_marker_xz.SetMarkerSize(1.3)
+                    start_marker_xz.Draw()
+                    ransac_scattered_markers.append(start_marker_xz)
+
+                    end_marker_xz = root.TMarker(float(end_point[0]), float(end_point[2]), 21)
+                    end_marker_xz.SetMarkerColor(marker_color)
+                    end_marker_xz.SetMarkerSize(1.3)
+                    end_marker_xz.Draw()
+                    ransac_scattered_markers.append(end_marker_xz)
 
                 # Constrained PCA line fits for beam tracks (fixed XY endpoints)
                 x_start = RunParameters.x_start_bin.value

@@ -13,6 +13,7 @@ class Regularize:
         merge_algorithm='gmm',
         func=None,
         label_column=None,
+        print_g_matrix=False,
     ):
         """
         Initialize the Regularize class.
@@ -28,6 +29,42 @@ class Regularize:
         self.func = func
         self.merge_algorithm = merge_algorithm
         self.label_column = label_column
+        self.print_g_matrix = bool(print_g_matrix)
+
+    @staticmethod
+    def _format_g_matrix_table(G, labels, max_k=30, precision=3):
+        """Return a readable table string for a square G matrix.
+
+        Truncates to at most max_k labels for readability.
+        """
+        G = np.asarray(G)
+        labels = [int(x) for x in labels]
+        K = len(labels)
+
+        nnz = int(np.count_nonzero(G))
+        header = f"G matrix (K={K}, nnz={nnz})"
+
+        if K == 0:
+            return header + "\n<empty>"
+
+        if K > max_k:
+            return (
+                header
+                + f"\n<truncated: showing first {max_k} labels>\n"
+                + Regularize._format_g_matrix_table(G[:max_k, :max_k], labels[:max_k], max_k=max_k, precision=precision)
+            )
+
+        # Build a fixed-width table
+        fmt = f"{{:>{precision+6}.{precision}f}}"
+        col_w = max(6, max(len(str(l)) for l in labels) + 1)
+
+        lines = [header]
+        lines.append("".ljust(col_w) + " ".join(str(l).rjust(col_w) for l in labels))
+        for i, row_label in enumerate(labels):
+            row_vals = " ".join(fmt.format(float(v)).rjust(col_w) for v in G[i])
+            lines.append(str(row_label).rjust(col_w) + row_vals)
+
+        return "\n".join(lines)
 
     def calculate_g_matrix_p_value(self, xyz_data, clusters):
         """
@@ -232,6 +269,7 @@ class Regularize:
         unique_clusters = np.unique(clusters_non_noise)
 
         iteration = 0
+        printed_once = False
         while True:
             iteration += 1
             # print(f"Iteration {iteration}: Unique clusters = {len(unique_clusters)}")
@@ -241,6 +279,14 @@ class Regularize:
                 G = self.calculate_g_matrix_p_value(xyz_data_non_noise, clusters_non_noise)
             if self.merge_type == 'cdist':
                 G = self.calculate_g_matrix_cdist(xyz_data_non_noise, clusters_non_noise)
+
+            if self.print_g_matrix and (self.merge_type == 'cdist') and not printed_once:
+                try:
+                    print(self._format_g_matrix_table(G, unique_clusters))
+                except Exception as _e:
+                    # Avoid breaking the merge if formatting fails
+                    print(f"G matrix computed (K={len(unique_clusters)}), but formatting failed: {_e}")
+                printed_once = True
             
             # Create mapping of row/column indices to cluster labels
             cluster_label_mapping = {idx: label for idx, label in enumerate(unique_clusters)}

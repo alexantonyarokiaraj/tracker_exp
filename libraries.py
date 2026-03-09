@@ -16,6 +16,7 @@ class DataArray(Enum):
     REGULARIZED_SIDE = 12
     RANSAC_SIDE = 13
     RANSAC_CDIST = 14
+    REGULARIZED_CDIST = 15
     
 class RunParameters(Enum):
     lib_path = '/home2/user/u0100486/linux/doctorate/github/tracker_exp/lib/'
