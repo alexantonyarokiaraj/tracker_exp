@@ -1,6 +1,7 @@
 import sys
 import argparse
 import os
+from dataclasses import dataclass
 from libraries import RunParameters, SCAN, DataArray, Optimize, RansacParameters, VolumeBoundaries
 import ROOT as root
 import numpy as np
@@ -17,6 +18,12 @@ from helper_functions.functions import (
 )
 from regularize import Regularize
 from ransac import find_multiple_lines_ransac
+
+@dataclass
+class TrackEndpoints3D:
+    track_id: int
+    start_point_full: np.ndarray  # shape (3,)
+    end_point_full: np.ndarray    # shape (3,)
 
 # Command-line argument parsing
 parser = argparse.ArgumentParser(description='Process events from a ROOT file.')
@@ -360,6 +367,11 @@ for entries in myTree:
 
             event_id = int(entries.data.event)
 
+            # Per-event scattered-track endpoint stores (3D)
+            # These are overwritten each event (not stored for all events).
+            GMM_REG = []
+            RANSAC = []
+
             if batch_mode:
                 zmin = RunParameters.z_start_bin.value
                 zmax = RunParameters.z_end_bin.value
@@ -453,7 +465,7 @@ for entries in myTree:
                 # Row 3: Regularized cdist-merged labels (XY, YZ, XZ)
                 graphs_reg = plot_3d_projections(data_points_3d, DataArray.REGULARIZED_CDIST, c1, [7, 8, 9], filter_label=filter_label)
 
-                # Scattered Regularized tracks: plot PCA-based (XY only) start/end markers on pad 7
+                # Scattered Regularized tracks: plot PCA-based (XYZ) start/end markers on pads 7/8/9
                 # Color: side=1 (above) -> red, else -> black
                 # Marker: start=cross, end=circle
                 reg_track_types = data_points_3d[:, DataArray.REGULARIZED_TRACK_TYPE.value].astype(int)
@@ -463,32 +475,70 @@ for entries in myTree:
                 scattered_labels = np.unique(reg_bm_labels[(reg_bm_labels != -1) & (reg_track_types == 1)])
                 scattered_markers = []
 
-                c1.cd(7)
                 for cluster_label in map(int, scattered_labels):
                     cluster_mask = (reg_bm_labels == cluster_label) & (reg_track_types == 1)
-                    points_xy = data_points_3d[cluster_mask][:, [DataArray.X.value, DataArray.Y.value]]
-                    if points_xy.shape[0] < 2:
+                    points_xyz = data_points_3d[cluster_mask][:, [DataArray.X.value, DataArray.Y.value, DataArray.Z.value]]
+                    if points_xyz.shape[0] < 2:
                         continue
 
                     try:
-                        end_point, start_point, *_ = get_directions(points_xy, include_z=False)
+                        end_point, start_point, *_ = get_directions(points_xyz, include_z=True)
                     except Exception:
                         continue
+
+                    # Store full 3D endpoints
+                    GMM_REG.append(
+                        TrackEndpoints3D(
+                            track_id=int(cluster_label),
+                            start_point_full=np.asarray(start_point, dtype=float).copy(),
+                            end_point_full=np.asarray(end_point, dtype=float).copy(),
+                        )
+                    )
 
                     side_value = int(reg_side[cluster_mask][0]) if np.any(cluster_mask) else 0
                     marker_color = root.kRed if side_value == 1 else root.kBlack
 
-                    start_marker = root.TMarker(float(start_point[0]), float(start_point[1]), 25)
-                    start_marker.SetMarkerColor(marker_color)
-                    start_marker.SetMarkerSize(1.4)
-                    start_marker.Draw()
-                    scattered_markers.append(start_marker)
+                    # XY (pad 7)
+                    c1.cd(7)
+                    start_marker_xy = root.TMarker(float(start_point[0]), float(start_point[1]), 25)
+                    start_marker_xy.SetMarkerColor(marker_color)
+                    start_marker_xy.SetMarkerSize(1.4)
+                    start_marker_xy.Draw()
+                    scattered_markers.append(start_marker_xy)
 
-                    end_marker = root.TMarker(float(end_point[0]), float(end_point[1]), 21)
-                    end_marker.SetMarkerColor(marker_color)
-                    end_marker.SetMarkerSize(1.4)
-                    end_marker.Draw()
-                    scattered_markers.append(end_marker)
+                    end_marker_xy = root.TMarker(float(end_point[0]), float(end_point[1]), 21)
+                    end_marker_xy.SetMarkerColor(marker_color)
+                    end_marker_xy.SetMarkerSize(1.4)
+                    end_marker_xy.Draw()
+                    scattered_markers.append(end_marker_xy)
+
+                    # YZ (pad 8)
+                    c1.cd(8)
+                    start_marker_yz = root.TMarker(float(start_point[1]), float(start_point[2]), 25)
+                    start_marker_yz.SetMarkerColor(marker_color)
+                    start_marker_yz.SetMarkerSize(1.4)
+                    start_marker_yz.Draw()
+                    scattered_markers.append(start_marker_yz)
+
+                    end_marker_yz = root.TMarker(float(end_point[1]), float(end_point[2]), 21)
+                    end_marker_yz.SetMarkerColor(marker_color)
+                    end_marker_yz.SetMarkerSize(1.4)
+                    end_marker_yz.Draw()
+                    scattered_markers.append(end_marker_yz)
+
+                    # XZ (pad 9)
+                    c1.cd(9)
+                    start_marker_xz = root.TMarker(float(start_point[0]), float(start_point[2]), 25)
+                    start_marker_xz.SetMarkerColor(marker_color)
+                    start_marker_xz.SetMarkerSize(1.4)
+                    start_marker_xz.Draw()
+                    scattered_markers.append(start_marker_xz)
+
+                    end_marker_xz = root.TMarker(float(end_point[0]), float(end_point[2]), 21)
+                    end_marker_xz.SetMarkerColor(marker_color)
+                    end_marker_xz.SetMarkerSize(1.4)
+                    end_marker_xz.Draw()
+                    scattered_markers.append(end_marker_xz)
                 
                 # Row 4: RANSAC cdist-merged labels (XY, YZ, XZ)
                 graphs_ransac = plot_3d_projections(data_points_3d, DataArray.RANSAC_CDIST, c1, [10, 11, 12], filter_label=filter_label)
@@ -515,6 +565,15 @@ for entries in myTree:
                         end_point, start_point, *_ = get_directions(points_xyz, include_z=True)
                     except Exception:
                         continue
+
+                    # Store full 3D endpoints
+                    RANSAC.append(
+                        TrackEndpoints3D(
+                            track_id=int(cluster_label),
+                            start_point_full=np.asarray(start_point, dtype=float).copy(),
+                            end_point_full=np.asarray(end_point, dtype=float).copy(),
+                        )
+                    )
 
                     side_value = int(ransac_side[cluster_mask][0]) if np.any(cluster_mask) else 0
                     marker_color = root.kRed if side_value == 1 else root.kBlack
