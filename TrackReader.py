@@ -244,6 +244,63 @@ for entries in myTree:
             )
 
             data_points_3d = np.column_stack((data_points_3d, regularized_side, ransac_side))
+    
+            # Additional scattered-track merging using cdist (done separately for above/below)
+            # Output labels go into a new column: DataArray.RANSAC_CDIST
+            ransac_cdist_labels = data_points_3d[:, DataArray.RANSAC_BEAM_MERGED.value].astype(int).copy()
+
+            ransac_track_types = data_points_3d[:, DataArray.RANSAC_TRACK_TYPE.value].astype(int)
+            ransac_side_values = data_points_3d[:, DataArray.RANSAC_SIDE.value].astype(int)
+
+            scattered_mask = ransac_track_types == 1
+            above_mask = scattered_mask & (ransac_side_values == 1)
+            below_mask = scattered_mask & (ransac_side_values == -1)
+
+            def _directions_xy(track_xyz):
+                return get_directions(track_xyz, include_z=False)
+
+            def _offset_labels(labels, start_label, noise_labels=(-1, -20)):
+                labels = np.asarray(labels, dtype=int)
+                out = labels.copy()
+                unique = [int(v) for v in np.unique(out) if int(v) not in noise_labels]
+                mapping = {old: start_label + i for i, old in enumerate(unique)}
+                for old, new in mapping.items():
+                    out[out == old] = new
+                return out, start_label + len(unique)
+
+            # Start new merged labels above any existing non-noise labels
+            valid_existing = ransac_cdist_labels[(ransac_cdist_labels != -1) & (ransac_cdist_labels != -20)]
+            highest_label = int(np.max(valid_existing) + 1) if valid_existing.size else 0
+
+            if np.any(above_mask):
+                subset_above = data_points_3d[above_mask].copy()
+                reg_above = Regularize(
+                    data_array=subset_above,
+                    low_energy_threshold=Optimize.C_DIST.value,
+                    merge_type='cdist',
+                    merge_algorithm='ransac',
+                    func=_directions_xy,
+                    label_column=DataArray.RANSAC_BEAM_MERGED,
+                )
+                merged_above = reg_above.merge_labels().astype(int)
+                merged_above, highest_label = _offset_labels(merged_above, highest_label)
+                ransac_cdist_labels[above_mask] = merged_above
+
+            if np.any(below_mask):
+                subset_below = data_points_3d[below_mask].copy()
+                reg_below = Regularize(
+                    data_array=subset_below,
+                    low_energy_threshold=Optimize.C_DIST.value,
+                    merge_type='cdist',
+                    merge_algorithm='ransac',
+                    func=_directions_xy,
+                    label_column=DataArray.RANSAC_BEAM_MERGED,
+                )
+                merged_below = reg_below.merge_labels().astype(int)
+                merged_below, highest_label = _offset_labels(merged_below, highest_label)
+                ransac_cdist_labels[below_mask] = merged_below
+
+            data_points_3d = np.column_stack((data_points_3d, ransac_cdist_labels))
 
             event_id = int(entries.data.event)
 
@@ -365,20 +422,59 @@ for entries in myTree:
                     side_value = int(reg_side[cluster_mask][0]) if np.any(cluster_mask) else 0
                     marker_color = root.kRed if side_value == 1 else root.kBlack
 
-                    start_marker = root.TMarker(float(start_point[0]), float(start_point[1]), 4)
+                    start_marker = root.TMarker(float(start_point[0]), float(start_point[1]), 25)
                     start_marker.SetMarkerColor(marker_color)
                     start_marker.SetMarkerSize(1.4)
                     start_marker.Draw()
                     scattered_markers.append(start_marker)
 
-                    end_marker = root.TMarker(float(end_point[0]), float(end_point[1]), 20)
+                    end_marker = root.TMarker(float(end_point[0]), float(end_point[1]), 21)
                     end_marker.SetMarkerColor(marker_color)
                     end_marker.SetMarkerSize(1.4)
                     end_marker.Draw()
                     scattered_markers.append(end_marker)
                 
-                # Row 4: RANSAC Beam Merged labels (XY, YZ, XZ)
-                graphs_ransac = plot_3d_projections(data_points_3d, DataArray.RANSAC_BEAM_MERGED, c1, [10, 11, 12], filter_label=filter_label)
+                # Row 4: RANSAC cdist-merged labels (XY, YZ, XZ)
+                graphs_ransac = plot_3d_projections(data_points_3d, DataArray.RANSAC_CDIST, c1, [10, 11, 12], filter_label=filter_label)
+
+                # Scattered RANSAC tracks: plot PCA-based (XY only) start/end markers on pad 10
+                # Color: side=1 (above) -> red, else -> black
+                # Marker: square (start=open square, end=filled square)
+                ransac_track_types = data_points_3d[:, DataArray.RANSAC_TRACK_TYPE.value].astype(int)
+                ransac_bm_labels = data_points_3d[:, DataArray.RANSAC_CDIST.value].astype(int)
+                ransac_side = data_points_3d[:, DataArray.RANSAC_SIDE.value].astype(int)
+
+                ransac_scattered_labels = np.unique(
+                    ransac_bm_labels[(ransac_bm_labels != -1) & (ransac_bm_labels != -20) & (ransac_track_types == 1)]
+                )
+                ransac_scattered_markers = []
+
+                c1.cd(10)
+                for cluster_label in map(int, ransac_scattered_labels):
+                    cluster_mask = (ransac_bm_labels == cluster_label) & (ransac_track_types == 1)
+                    points_xy = data_points_3d[cluster_mask][:, [DataArray.X.value, DataArray.Y.value]]
+                    if points_xy.shape[0] < 2:
+                        continue
+
+                    try:
+                        end_point, start_point, *_ = get_directions(points_xy, include_z=False)
+                    except Exception:
+                        continue
+
+                    side_value = int(ransac_side[cluster_mask][0]) if np.any(cluster_mask) else 0
+                    marker_color = root.kRed if side_value == 1 else root.kBlack
+
+                    start_marker = root.TMarker(float(start_point[0]), float(start_point[1]), 25)
+                    start_marker.SetMarkerColor(marker_color)
+                    start_marker.SetMarkerSize(1.3)
+                    start_marker.Draw()
+                    ransac_scattered_markers.append(start_marker)
+
+                    end_marker = root.TMarker(float(end_point[0]), float(end_point[1]), 21)
+                    end_marker.SetMarkerColor(marker_color)
+                    end_marker.SetMarkerSize(1.3)
+                    end_marker.Draw()
+                    ransac_scattered_markers.append(end_marker)
 
                 # Constrained PCA line fits for beam tracks (fixed XY endpoints)
                 x_start = RunParameters.x_start_bin.value
@@ -463,4 +559,4 @@ for entries in myTree:
                 c2.Update()
                 os.makedirs("images", exist_ok=True)
                 c1.SaveAs(f"images/event_{event_id}_clustering.png")
-                c2.SaveAs(f"images/event_{event_id}_beam_centroids.png")
+                # c2.SaveAs(f"images/event_{event_id}_beam_centroids.png")

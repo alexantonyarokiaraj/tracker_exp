@@ -15,6 +15,7 @@ class DataArray(Enum):
     RANSAC_BEAM_MERGED = 11
     REGULARIZED_SIDE = 12
     RANSAC_SIDE = 13
+    RANSAC_CDIST = 14
     
 class RunParameters(Enum):
     lib_path = '/home2/user/u0100486/linux/doctorate/github/tracker_exp/lib/'
@@ -53,6 +54,7 @@ class Optimize(Enum):
     P_VALUE = 0.1
     LOW_ENERGY_THRESHOLD = 15
     BEAM_Z_MERGE_THRESHOLD_MM = 20.0
+    C_DIST = 15.0
 
 class RansacParameters(Enum):
     MAX_LINES = 100

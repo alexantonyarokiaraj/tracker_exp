@@ -4,7 +4,16 @@ from scipy.stats import chi2
 
 class Regularize:
 
-    def __init__(self, data_array, threshold=0.1, low_energy_threshold=15, merge_type='p_value', merge_algorithm='gmm', func=None):
+    def __init__(
+        self,
+        data_array,
+        threshold=0.1,
+        low_energy_threshold=15,
+        merge_type='p_value',
+        merge_algorithm='gmm',
+        func=None,
+        label_column=None,
+    ):
         """
         Initialize the Regularize class.
 
@@ -18,6 +27,7 @@ class Regularize:
         self.merge_type = merge_type
         self.func = func
         self.merge_algorithm = merge_algorithm
+        self.label_column = label_column
 
     def calculate_g_matrix_p_value(self, xyz_data, clusters):
         """
@@ -196,22 +206,26 @@ class Regularize:
         """
         xyz_data = self.data[:, DataArray.X.value:DataArray.Z.value + 1]
 
-        if self.merge_type == 'p_value' and self.merge_algorithm == 'gmm':
-            # print('pval merge')
-            clusters = self.data[:, DataArray.GMM.value].astype(int)
-        if self.merge_type == 'cdist' and self.merge_algorithm == 'gmm':
-            # print('dist merge')
-            clusters = self.data[:, DataArray.merge_p_val.value].astype(int)
-        if self.merge_type == 'cdist' and self.merge_algorithm == 'ransac':
-            # print('dist merge')
-            clusters = self.data[:, DataArray.ransac_labels.value].astype(int)
+        if self.label_column is not None:
+            clusters = self.data[:, self.label_column.value].astype(int)
+        else:
+            if self.merge_type == 'p_value' and self.merge_algorithm == 'gmm':
+                # print('pval merge')
+                clusters = self.data[:, DataArray.GMM.value].astype(int)
+            if self.merge_type == 'cdist' and self.merge_algorithm == 'gmm':
+                # print('dist merge')
+                clusters = self.data[:, DataArray.REGULARIZED.value].astype(int)
+            if self.merge_type == 'cdist' and self.merge_algorithm == 'ransac':
+                # print('dist merge')
+                clusters = self.data[:, DataArray.RANSAC.value].astype(int)
 
         # Store noise points for later
-        noise_mask = clusters == -1
+        # RANSAC sometimes uses -20 as an "unassigned"/noise-like label
+        noise_mask = (clusters == -1) | (clusters == -20)
         noise_points = np.where(noise_mask)[0]
         
         # Work only with non-noise points
-        non_noise_mask = clusters != -1
+        non_noise_mask = ~noise_mask
         clusters_non_noise = clusters[non_noise_mask]
         xyz_data_non_noise = xyz_data[non_noise_mask]
         
@@ -245,7 +259,7 @@ class Regularize:
                     ci, cj = unique_clusters[i], unique_clusters[j]
                     # print(f"Merging clusters {ci} and {cj}.")
 
-                    # Assign the higher cluster label to all points in cj
+                    # Assign the higher cluste r label to all points in cj
                     merged_label = max(ci, cj)
                     cluster_mapping[cj] = merged_label
                     cluster_mapping[ci] = merged_label
@@ -260,8 +274,8 @@ class Regularize:
         # Reconstruct the full clusters array with noise points preserved
         clusters_final = np.copy(clusters)
         clusters_final[non_noise_mask] = clusters_non_noise
-        # Ensure noise points retain their -1 label
-        clusters_final[noise_mask] = -1
+        # Ensure noise points retain their original noise label (-1 or -20)
+        clusters_final[noise_mask] = clusters[noise_mask]
         
         return clusters_final
 
