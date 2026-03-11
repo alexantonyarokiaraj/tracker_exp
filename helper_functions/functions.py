@@ -87,38 +87,24 @@ def dbcluster(data_array, N_PROC, nn_neighbor, nn_radius, db_min_samples, sensit
 def get_unique_colors(n_colors):
     """
     Generate a list of unique colors for ROOT graphics.
-    Uses a predefined set of distinct colors and extends with ROOT color indices.
-    
+    Uses evenly-spaced HSV hues to guarantee perceptually distinct colors
+    for any number of clusters.
+
     Parameters:
     - n_colors: int, number of unique colors needed
-    
+
     Returns:
-    - colors: list of ROOT color values
+    - colors: list of ROOT TColor indices
     """
-    # Base set of distinct ROOT colors
-    base_colors = [
-        root.kBlue, root.kRed, root.kGreen, root.kMagenta, 
-        root.kCyan, root.kYellow, root.kBlack, root.kOrange,
-        root.kPink, root.kViolet, root.kSpring, root.kTeal,
-        root.kAzure, root.kRose, root.kGray
-    ]
-    
-    # If we need more colors than available, extend with color indices
-    if n_colors <= len(base_colors):
-        return base_colors[:n_colors]
-    else:
-        # Extend with ROOT color indices (colors are typically 0-100+)
-        extended_colors = base_colors.copy()
-        color_idx = 1
-        while len(extended_colors) < n_colors:
-            # Use ROOT color indices, avoiding conflicts with base colors
-            if color_idx not in [root.kBlue, root.kRed, root.kGreen, root.kMagenta,
-                                  root.kCyan, root.kYellow, root.kBlack, root.kOrange,
-                                  root.kPink, root.kViolet, root.kSpring, root.kTeal,
-                                  root.kAzure, root.kRose, root.kGray]:
-                extended_colors.append(color_idx)
-            color_idx += 1
-        return extended_colors[:n_colors]
+    import colorsys
+    if n_colors == 0:
+        return []
+    colors = []
+    for i in range(n_colors):
+        hue = i / n_colors          # evenly spaced around the colour wheel
+        r, g, b = colorsys.hsv_to_rgb(hue, 0.9, 0.9)
+        colors.append(root.TColor.GetColor(int(r * 255), int(g * 255), int(b * 255)))
+    return colors
 
 
 def plot_3d_projections(data_array, color_column_idx, canvas, pad_positions=[1, 2, 3], filter_label=None):
@@ -562,14 +548,17 @@ def hierarchical_clustering_with_responsibilities(data_array, max_components=10)
 # Function to plot the kinematics of GMM Clusters
 def get_directions(
     data,
-    beam_start=np.array([0, 128, 128]),
-    beam_end=np.array([256, 128, 128]),
+    beam_start=None,
+    beam_end=None,
     include_z=True,
+    beam_plane_y=VolumeBoundaries.BEAM_CENTER.value,
 ):
     """Compute a PCA direction for a track and extract (start,end) points.
 
     - If include_z=True: operate in XYZ (3D).
     - If include_z=False: operate in XY only (2D), effectively ignoring Z.
+    - If beam_start/beam_end are missing or degenerate, start/end are selected
+        using distance to the XZ beam plane at y=beam_plane_y.
 
     The function auto-reduces constant dimensions (e.g. constant Y) to avoid PCA issues,
     but returns vectors/points in the requested output dimensionality (2D or 3D).
@@ -615,20 +604,28 @@ def get_directions(
     track_mean = np.mean(data_base, axis=0)
     closest_points = find_closest_points_on_line(data_base, dirVecTrackNorm, track_mean)
 
-    beam_start = np.asarray(beam_start, dtype=float)
-    beam_end = np.asarray(beam_end, dtype=float)
-    beam_start_base = beam_start[: len(base_dims)]
-    beam_end_base = beam_end[: len(base_dims)]
-    beam_vector = beam_end_base - beam_start_base
-    beam_mean = 0.5 * (beam_start_base + beam_end_base)
+    beam_mean = None
+    beam_vector = np.zeros(len(base_dims), dtype=float)
+    if beam_start is not None and beam_end is not None:
+        beam_start = np.asarray(beam_start, dtype=float)
+        beam_end = np.asarray(beam_end, dtype=float)
+        beam_start_base = beam_start[: len(base_dims)]
+        beam_end_base = beam_end[: len(base_dims)]
+        candidate_beam_vector = beam_end_base - beam_start_base
+        if np.linalg.norm(candidate_beam_vector) > 0:
+            beam_vector = candidate_beam_vector
+            beam_mean = 0.5 * (beam_start_base + beam_end_base)
 
     start_point, end_point = start_end_points(
-        closest_points, beam_mean=beam_mean, dirVecBeam=beam_vector
+        closest_points,
+        beam_mean=beam_mean,
+        dirVecBeam=beam_vector,
+        beam_plane_y=beam_plane_y,
     )
 
-    # Prefer the point closer to the beam zone center in Y as the "start"
-    dist_start = abs(start_point[1] - VolumeBoundaries.BEAM_CENTER.value)
-    dist_end = abs(end_point[1] - VolumeBoundaries.BEAM_CENTER.value)
+    # Prefer the point closer to the beam reference plane in Y as the "start"
+    dist_start = abs(start_point[1] - beam_plane_y)
+    dist_end = abs(end_point[1] - beam_plane_y)
     if dist_end < dist_start:
         start_point, end_point = end_point, start_point
 
@@ -665,34 +662,46 @@ def find_closest_points_on_line(data, direction_vector, cluster_mean):
     return closest_points
 
 # Function to find the start and the end points
-def start_end_points(pca_points, beam_mean, dirVecBeam):
+def start_end_points(pca_points, beam_mean=None, dirVecBeam=None, beam_plane_y=VolumeBoundaries.BEAM_CENTER.value):
     """
     Finds the start and end points on the PCA line based on the shortest and longest distances
-    to the beam line.
+    to a reference beam geometry.
 
     Args:
         pca_points: A NumPy array of shape (n, d) containing the closest points on the PCA line.
         beam_mean: A NumPy array of shape (d,) representing a point on the beam line.
+            If None (or if dirVecBeam is invalid), distances are measured to the XZ beam plane.
         dirVecBeam: A NumPy array of shape (d,) representing the direction vector of the beam line.
+        beam_plane_y: The Y coordinate of the XZ beam plane used when no beam line is available.
 
     Returns:
-        start_point: The point on the PCA line with the shortest distance to the beam line.
-        end_point: The point on the PCA line with the longest distance to the beam line.
-        distances: A list of distances from each PCA point to the beam line.
+        start_point: The point on the PCA line with the shortest distance to the beam reference.
+        end_point: The point on the PCA line with the longest distance to the beam reference.
     """
-    distances = []
-    closest_points_on_beam = []
+    pca_points = np.asarray(pca_points, dtype=float)
+    if pca_points.ndim != 2 or pca_points.shape[0] == 0:
+        raise ValueError(f"Expected pca_points with shape (N, d), got {pca_points.shape}")
 
-    for point in pca_points:
-        # Find the closest point on the beam line for each PCA point
-        closest_point = find_closest_points_on_line(point, dirVecBeam, beam_mean)
-        # Calculate the distance between the point on the PCA line and the closest point on the beam line
-        distance = np.linalg.norm(point - closest_point)
-        distances.append(distance)
-        closest_points_on_beam.append(closest_point)
+    use_beam_line = beam_mean is not None and dirVecBeam is not None
+    if use_beam_line:
+        beam_mean = np.asarray(beam_mean, dtype=float)
+        dirVecBeam = np.asarray(dirVecBeam, dtype=float)
+        use_beam_line = (
+            beam_mean.shape[0] == pca_points.shape[1] and
+            dirVecBeam.shape[0] == pca_points.shape[1] and
+            np.linalg.norm(dirVecBeam) > 0
+        )
 
-    # Convert distances to a numpy array for easier indexing
-    distances = np.array(distances)
+    if use_beam_line:
+        distances = np.array([
+            np.linalg.norm(point - find_closest_points_on_line(point, dirVecBeam, beam_mean))
+            for point in pca_points
+        ])
+    else:
+        # Beam-plane fallback: distance to XZ plane at y=beam_plane_y.
+        if pca_points.shape[1] < 2:
+            raise ValueError("Beam-plane fallback requires points with at least 2 dimensions (x, y).")
+        distances = np.abs(pca_points[:, 1] - float(beam_plane_y))
 
     # Find the index of the point with the smallest and largest distance
     start_index = np.argmin(distances)
@@ -703,3 +712,124 @@ def start_end_points(pca_points, beam_mean, dirVecBeam):
     end_point = pca_points[end_index]
 
     return start_point, end_point
+
+
+def find_closest_beam_track(
+    scattered_points_xyz,
+    start_point,
+    dirVecTrackNorm,
+    beam_endpoints,
+    truncation_mm=Optimize.SCATTERED_TRUNCATION_MM.value, 
+):
+    """
+    Find the closest beam track to a scattered track.
+
+    Fits a PCA line using only the scattered-track points within
+    `truncation_mm` of `start_point` along the track direction, then
+    returns the beam-track label whose 3D line is closest to that fit.
+
+    Also returns the vertex (point on the truncated scattered-track line
+    closest to the closest beam line) and the start/end points of the
+    truncated PCA fit.
+
+    Args:
+        scattered_points_xyz: (N, 3) array of scattered track 3D points.
+        start_point: (3,) start point of the scattered track.
+        dirVecTrackNorm: (3,) unit direction vector of the scattered track.
+        beam_endpoints: dict mapping beam label -> ((x0,y0,z0), (x1,y1,z1)).
+        truncation_mm: Only include points within this distance from start_point
+            along the track direction (default Optimize.SCATTERED_TRUNCATION_MM).
+
+    Returns:
+        closest_label: int label of the closest beam track, or -1 if none.
+        closest_dist_mm: float distance (mm) to the closest beam track line.
+        vertex: (3,) point on the truncated scattered track closest to the beam
+            track line, or None if no beam track found.
+        trunc_start: (3,) start of the truncated PCA fit (projected extreme closer
+            to the beam reference plane in Y).
+        trunc_end: (3,) end of the truncated PCA fit (projected extreme farther
+            from the beam reference plane in Y).
+    """
+    if not beam_endpoints:
+        return -1, float('inf'), None, None, None
+
+    scattered_points_xyz = np.asarray(scattered_points_xyz, dtype=float)
+    start_point = np.asarray(start_point, dtype=float)
+    dirVecTrackNorm = np.asarray(dirVecTrackNorm, dtype=float)
+    dirVecTrackNorm = dirVecTrackNorm / np.linalg.norm(dirVecTrackNorm)
+
+    # Keep only points with projection in [0, truncation_mm] from start_point
+    offsets = (scattered_points_xyz - start_point) @ dirVecTrackNorm
+    mask = (offsets >= 0) & (offsets <= truncation_mm)
+    truncated = scattered_points_xyz[mask]
+    if truncated.shape[0] < 2:
+        truncated = scattered_points_xyz  # fallback: use all points
+
+    # Fit PCA line through the truncated points
+    mean_t = truncated.mean(axis=0)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        pca = PCA(n_components=1)
+        pca.fit(truncated - mean_t)
+    dir_t = pca.components_[0]  # unit direction of truncated scattered track
+
+    # Truncated fit start/end: projected extremes of the truncated point set
+    projs = (truncated - mean_t) @ dir_t
+    trunc_start = mean_t + float(projs.min()) * dir_t
+    trunc_end = mean_t + float(projs.max()) * dir_t
+    # Orient so start is closer to the beam plane (Y ~ BEAM_CENTER)
+    beam_y = float(VolumeBoundaries.BEAM_CENTER.value)
+    if abs(trunc_end[1] - beam_y) < abs(trunc_start[1] - beam_y):
+        trunc_start, trunc_end = trunc_end, trunc_start
+
+    # Compute 3D skew-line distance from each beam line to the truncated fit
+    closest_label = -1
+    closest_dist_mm = float('inf')
+
+    for label, (p0, p1) in beam_endpoints.items():
+        p0 = np.asarray(p0, dtype=float)
+        p1 = np.asarray(p1, dtype=float)
+        d_beam = p1 - p0
+        norm_beam = np.linalg.norm(d_beam)
+        if norm_beam < 1e-9:
+            continue
+        d_beam = d_beam / norm_beam
+
+        cross = np.cross(dir_t, d_beam)
+        cross_norm = np.linalg.norm(cross)
+        diff = mean_t - p0
+
+        if cross_norm < 1e-9:
+            # Parallel lines: perpendicular point-to-line distance
+            dist = float(np.linalg.norm(diff - np.dot(diff, d_beam) * d_beam))
+        else:
+            # Skew lines: distance along the common perpendicular
+            dist = float(abs(np.dot(diff, cross)) / cross_norm)
+
+        if dist < closest_dist_mm:
+            closest_dist_mm = dist
+            closest_label = int(label)
+
+    # Compute vertex: point on the truncated scattered track closest to the
+    # closest beam track line, using the skew-line closest-approach formula.
+    vertex = None
+    if closest_label != -1 and closest_label in beam_endpoints:
+        p0_v = np.asarray(beam_endpoints[closest_label][0], dtype=float)
+        p1_v = np.asarray(beam_endpoints[closest_label][1], dtype=float)
+        d_beam_v = p1_v - p0_v
+        norm_v = np.linalg.norm(d_beam_v)
+        if norm_v > 1e-9:
+            d_beam_v = d_beam_v / norm_v
+            w = mean_t - p0_v
+            b = float(np.dot(dir_t, d_beam_v))
+            d_val = float(np.dot(dir_t, w))
+            e_val = float(np.dot(d_beam_v, w))
+            denom = 1.0 - b * b
+            if abs(denom) < 1e-9:
+                # Parallel: vertex is foot of perpendicular from p0_v onto scattered track
+                s = -d_val
+            else:
+                s = (b * e_val - d_val) / denom
+            vertex = mean_t + s * dir_t
+
+    return closest_label, closest_dist_mm, vertex, trunc_start, trunc_end

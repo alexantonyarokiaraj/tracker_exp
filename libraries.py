@@ -56,6 +56,9 @@ class Optimize(Enum):
     LOW_ENERGY_THRESHOLD = 15
     BEAM_Z_MERGE_THRESHOLD_MM = 20.0
     C_DIST = 15.0
+    SCATTERED_TRUNCATION_MM = 40.0
+    VERTEX_GROUP_RADIUS_MM = 30.0
+    VERTEX_ZOOM_MARGIN_MM = 40.0
 
 class RansacParameters(Enum):
     MAX_LINES = 100

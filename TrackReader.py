@@ -15,6 +15,8 @@ from helper_functions.functions import (
     compute_scattered_track_side,
     relabel_small_clusters_to_noise,
     get_directions,
+    find_closest_beam_track,
+    get_unique_colors,
 )
 from regularize import Regularize
 from ransac import find_multiple_lines_ransac
@@ -24,6 +26,11 @@ class TrackEndpoints3D:
     track_id: int
     start_point_full: np.ndarray  # shape (3,)
     end_point_full: np.ndarray    # shape (3,)
+    closest_beam_id: int = -1
+    closest_beam_dist_mm: float = float('inf')
+    vertex: np.ndarray = None           # closest-approach point on scattered track to beam track
+    trunc_start: np.ndarray = None      # start of 40mm-truncated PCA fit
+    trunc_end: np.ndarray = None        # end of 40mm-truncated PCA fit
 
 # Command-line argument parsing
 parser = argparse.ArgumentParser(description='Process events from a ROOT file.')
@@ -266,7 +273,13 @@ for entries in myTree:
             below_mask = scattered_mask & valid_label_mask & (ransac_side_values == -1)
 
             def _directions_xy(track_xyz):
-                return get_directions(track_xyz, include_z=False)
+                return get_directions(
+                    track_xyz,
+                    beam_start=None,
+                    beam_end=None,
+                    include_z=True,
+                    beam_plane_y=VolumeBoundaries.BEAM_CENTER.value,
+                )
 
             def _offset_labels(labels, start_label, noise_labels=(-1, -20)):
                 labels = np.asarray(labels, dtype=int)
@@ -465,6 +478,32 @@ for entries in myTree:
                 # Row 3: Regularized cdist-merged labels (XY, YZ, XZ)
                 graphs_reg = plot_3d_projections(data_points_3d, DataArray.REGULARIZED_CDIST, c1, [7, 8, 9], filter_label=filter_label)
 
+                # Constrained PCA line fits for beam tracks (fixed XY endpoints)
+                x_start = RunParameters.x_start_bin.value
+                x_end = RunParameters.x_end_bin.value
+                y_fixed = VolumeBoundaries.BEAM_CENTER.value
+
+                reg_endpoints = fit_beam_tracks_pca_constrained_endpoints(
+                    data_points_3d,
+                    label_column=DataArray.REGULARIZED_BEAM_MERGED,
+                    track_type_column=DataArray.REGULARIZED_TRACK_TYPE,
+                    x_start=x_start,
+                    x_end=x_end,
+                    y_fixed=y_fixed,
+                    noise_labels=(-1,),
+                    beam_value=0,
+                )
+                ransac_endpoints = fit_beam_tracks_pca_constrained_endpoints(
+                    data_points_3d,
+                    label_column=DataArray.RANSAC_BEAM_MERGED,
+                    track_type_column=DataArray.RANSAC_TRACK_TYPE,
+                    x_start=x_start,
+                    x_end=x_end,
+                    y_fixed=y_fixed,
+                    noise_labels=(-1, -20),
+                    beam_value=0,
+                )
+
                 # Scattered Regularized tracks: plot PCA-based (XYZ) start/end markers on pads 7/8/9
                 # Color: side=1 (above) -> red, else -> black
                 # Marker: start=cross, end=circle
@@ -482,9 +521,14 @@ for entries in myTree:
                         continue
 
                     try:
-                        end_point, start_point, *_ = get_directions(points_xyz, include_z=True)
+                          end_point, start_point, _beam_vec, dirVecTrackNorm, *_ = get_directions(points_xyz, include_z=True)
                     except Exception:
                         continue
+
+                    beam_label, beam_dist, vertex, trunc_start, trunc_end = find_closest_beam_track(
+                        points_xyz, start_point, dirVecTrackNorm, reg_endpoints
+                    )
+                    print(f"  REG scattered {cluster_label} -> beam {beam_label} ({beam_dist:.1f} mm)")
 
                     # Store full 3D endpoints
                     GMM_REG.append(
@@ -492,6 +536,11 @@ for entries in myTree:
                             track_id=int(cluster_label),
                             start_point_full=np.asarray(start_point, dtype=float).copy(),
                             end_point_full=np.asarray(end_point, dtype=float).copy(),
+                            closest_beam_id=beam_label,
+                            closest_beam_dist_mm=beam_dist,
+                            vertex=np.asarray(vertex, dtype=float).copy() if vertex is not None else None,
+                            trunc_start=np.asarray(trunc_start, dtype=float).copy() if trunc_start is not None else None,
+                            trunc_end=np.asarray(trunc_end, dtype=float).copy() if trunc_end is not None else None,
                         )
                     )
 
@@ -539,7 +588,79 @@ for entries in myTree:
                     end_marker_xz.SetMarkerSize(1.4)
                     end_marker_xz.Draw()
                     scattered_markers.append(end_marker_xz)
-                
+
+                    # Fitted scattered-track line (solid)
+                    c1.cd(7)
+                    scat_ln_xy = root.TLine(float(start_point[0]), float(start_point[1]), float(end_point[0]), float(end_point[1]))
+                    scat_ln_xy.SetLineColor(marker_color)
+                    scat_ln_xy.SetLineWidth(2)
+                    scat_ln_xy.Draw()
+                    scattered_markers.append(scat_ln_xy)
+
+                    c1.cd(8)
+                    scat_ln_yz = root.TLine(float(start_point[1]), float(start_point[2]), float(end_point[1]), float(end_point[2]))
+                    scat_ln_yz.SetLineColor(marker_color)
+                    scat_ln_yz.SetLineWidth(2)
+                    scat_ln_yz.Draw()
+                    scattered_markers.append(scat_ln_yz)
+
+                    c1.cd(9)
+                    scat_ln_xz = root.TLine(float(start_point[0]), float(start_point[2]), float(end_point[0]), float(end_point[2]))
+                    scat_ln_xz.SetLineColor(marker_color)
+                    scat_ln_xz.SetLineWidth(2)
+                    scat_ln_xz.Draw()
+                    scattered_markers.append(scat_ln_xz)
+
+                    # Closest beam-track line (dashed, same color)
+                    if beam_label != -1 and beam_label in reg_endpoints:
+                        bp0, bp1 = reg_endpoints[beam_label]
+                        c1.cd(7)
+                        bm_ln_xy = root.TLine(float(bp0[0]), float(bp0[1]), float(bp1[0]), float(bp1[1]))
+                        bm_ln_xy.SetLineColor(marker_color)
+                        bm_ln_xy.SetLineWidth(4)
+                        bm_ln_xy.SetLineStyle(2)
+                        bm_ln_xy.Draw()
+                        scattered_markers.append(bm_ln_xy)
+
+                        c1.cd(8)
+                        bm_ln_yz = root.TLine(float(bp0[1]), float(bp0[2]), float(bp1[1]), float(bp1[2]))
+                        bm_ln_yz.SetLineColor(marker_color)
+                        bm_ln_yz.SetLineWidth(4)
+                        bm_ln_yz.SetLineStyle(2)
+                        bm_ln_yz.Draw()
+                        scattered_markers.append(bm_ln_yz)
+
+                        c1.cd(9)
+                        bm_ln_xz = root.TLine(float(bp0[0]), float(bp0[2]), float(bp1[0]), float(bp1[2]))
+                        bm_ln_xz.SetLineColor(marker_color)
+                        bm_ln_xz.SetLineWidth(4)
+                        bm_ln_xz.SetLineStyle(2)
+                        bm_ln_xz.Draw()
+                        scattered_markers.append(bm_ln_xz)
+
+                    # Vertex: open circle on all 3 projections
+                    if vertex is not None:
+                        c1.cd(7)
+                        vtx_xy = root.TMarker(float(vertex[0]), float(vertex[1]), 24)
+                        vtx_xy.SetMarkerColor(marker_color)
+                        vtx_xy.SetMarkerSize(2.0)
+                        vtx_xy.Draw()
+                        scattered_markers.append(vtx_xy)
+
+                        c1.cd(8)
+                        vtx_yz = root.TMarker(float(vertex[1]), float(vertex[2]), 24)
+                        vtx_yz.SetMarkerColor(marker_color)
+                        vtx_yz.SetMarkerSize(2.0)
+                        vtx_yz.Draw()
+                        scattered_markers.append(vtx_yz)
+
+                        c1.cd(9)
+                        vtx_xz = root.TMarker(float(vertex[0]), float(vertex[2]), 24)
+                        vtx_xz.SetMarkerColor(marker_color)
+                        vtx_xz.SetMarkerSize(2.0)
+                        vtx_xz.Draw()
+                        scattered_markers.append(vtx_xz)
+
                 # Row 4: RANSAC cdist-merged labels (XY, YZ, XZ)
                 graphs_ransac = plot_3d_projections(data_points_3d, DataArray.RANSAC_CDIST, c1, [10, 11, 12], filter_label=filter_label)
 
@@ -562,9 +683,14 @@ for entries in myTree:
                         continue
 
                     try:
-                        end_point, start_point, *_ = get_directions(points_xyz, include_z=True)
+                        end_point, start_point, _beam_vec, dirVecTrackNorm, *_ = get_directions(points_xyz, include_z=True)
                     except Exception:
                         continue
+
+                    beam_label, beam_dist, vertex, trunc_start, trunc_end = find_closest_beam_track(
+                        points_xyz, start_point, dirVecTrackNorm, ransac_endpoints
+                    )
+                    print(f"  RANSAC scattered {cluster_label} -> beam {beam_label} ({beam_dist:.1f} mm)")
 
                     # Store full 3D endpoints
                     RANSAC.append(
@@ -572,6 +698,11 @@ for entries in myTree:
                             track_id=int(cluster_label),
                             start_point_full=np.asarray(start_point, dtype=float).copy(),
                             end_point_full=np.asarray(end_point, dtype=float).copy(),
+                            closest_beam_id=beam_label,
+                            closest_beam_dist_mm=beam_dist,
+                            vertex=np.asarray(vertex, dtype=float).copy() if vertex is not None else None,
+                            trunc_start=np.asarray(trunc_start, dtype=float).copy() if trunc_start is not None else None,
+                            trunc_end=np.asarray(trunc_end, dtype=float).copy() if trunc_end is not None else None,
                         )
                     )
 
@@ -620,31 +751,77 @@ for entries in myTree:
                     end_marker_xz.Draw()
                     ransac_scattered_markers.append(end_marker_xz)
 
-                # Constrained PCA line fits for beam tracks (fixed XY endpoints)
-                x_start = RunParameters.x_start_bin.value
-                x_end = RunParameters.x_end_bin.value
-                y_fixed = VolumeBoundaries.BEAM_CENTER.value
+                    # Fitted scattered-track line (solid)
+                    c1.cd(10)
+                    scat_ln_xy = root.TLine(float(start_point[0]), float(start_point[1]), float(end_point[0]), float(end_point[1]))
+                    scat_ln_xy.SetLineColor(marker_color)
+                    scat_ln_xy.SetLineWidth(2)
+                    scat_ln_xy.Draw()
+                    ransac_scattered_markers.append(scat_ln_xy)
 
-                reg_endpoints = fit_beam_tracks_pca_constrained_endpoints(
-                    data_points_3d,
-                    label_column=DataArray.REGULARIZED_BEAM_MERGED,
-                    track_type_column=DataArray.REGULARIZED_TRACK_TYPE,
-                    x_start=x_start,
-                    x_end=x_end,
-                    y_fixed=y_fixed,
-                    noise_labels=(-1,),
-                    beam_value=0,
-                )
-                ransac_endpoints = fit_beam_tracks_pca_constrained_endpoints(
-                    data_points_3d,
-                    label_column=DataArray.RANSAC_BEAM_MERGED,
-                    track_type_column=DataArray.RANSAC_TRACK_TYPE,
-                    x_start=x_start,
-                    x_end=x_end,
-                    y_fixed=y_fixed,
-                    noise_labels=(-1, -20),
-                    beam_value=0,
-                )
+                    c1.cd(11)
+                    scat_ln_yz = root.TLine(float(start_point[1]), float(start_point[2]), float(end_point[1]), float(end_point[2]))
+                    scat_ln_yz.SetLineColor(marker_color)
+                    scat_ln_yz.SetLineWidth(2)
+                    scat_ln_yz.Draw()
+                    ransac_scattered_markers.append(scat_ln_yz)
+
+                    c1.cd(12)
+                    scat_ln_xz = root.TLine(float(start_point[0]), float(start_point[2]), float(end_point[0]), float(end_point[2]))
+                    scat_ln_xz.SetLineColor(marker_color)
+                    scat_ln_xz.SetLineWidth(2)
+                    scat_ln_xz.Draw()
+                    ransac_scattered_markers.append(scat_ln_xz)
+
+                    # Closest beam-track line (dashed, same color)
+                    if beam_label != -1 and beam_label in ransac_endpoints:
+                        bp0, bp1 = ransac_endpoints[beam_label]
+                        c1.cd(10)
+                        bm_ln_xy = root.TLine(float(bp0[0]), float(bp0[1]), float(bp1[0]), float(bp1[1]))
+                        bm_ln_xy.SetLineColor(marker_color)
+                        bm_ln_xy.SetLineWidth(4)
+                        bm_ln_xy.SetLineStyle(2)
+                        bm_ln_xy.Draw()
+                        ransac_scattered_markers.append(bm_ln_xy)
+
+                        c1.cd(11)
+                        bm_ln_yz = root.TLine(float(bp0[1]), float(bp0[2]), float(bp1[1]), float(bp1[2]))
+                        bm_ln_yz.SetLineColor(marker_color)
+                        bm_ln_yz.SetLineWidth(4)
+                        bm_ln_yz.SetLineStyle(2)
+                        bm_ln_yz.Draw()
+                        ransac_scattered_markers.append(bm_ln_yz)
+
+                        c1.cd(12)
+                        bm_ln_xz = root.TLine(float(bp0[0]), float(bp0[2]), float(bp1[0]), float(bp1[2]))
+                        bm_ln_xz.SetLineColor(marker_color)
+                        bm_ln_xz.SetLineWidth(4)
+                        bm_ln_xz.SetLineStyle(2)
+                        bm_ln_xz.Draw()
+                        ransac_scattered_markers.append(bm_ln_xz)
+
+                    # Vertex: open circle on all 3 projections
+                    if vertex is not None:
+                        c1.cd(10)
+                        vtx_xy = root.TMarker(float(vertex[0]), float(vertex[1]), 24)
+                        vtx_xy.SetMarkerColor(marker_color)
+                        vtx_xy.SetMarkerSize(2.0)
+                        vtx_xy.Draw()
+                        ransac_scattered_markers.append(vtx_xy)
+
+                        c1.cd(11)
+                        vtx_yz = root.TMarker(float(vertex[1]), float(vertex[2]), 24)
+                        vtx_yz.SetMarkerColor(marker_color)
+                        vtx_yz.SetMarkerSize(2.0)
+                        vtx_yz.Draw()
+                        ransac_scattered_markers.append(vtx_yz)
+
+                        c1.cd(12)
+                        vtx_xz = root.TMarker(float(vertex[0]), float(vertex[2]), 24)
+                        vtx_xz.SetMarkerColor(marker_color)
+                        vtx_xz.SetMarkerSize(2.0)
+                        vtx_xz.Draw()
+                        ransac_scattered_markers.append(vtx_xz)
 
                 fitted_lines = []
 
@@ -701,6 +878,199 @@ for entries in myTree:
                 
                 c1.Update()
                 c2.Update()
-                os.makedirs("images", exist_ok=True)
-                c1.SaveAs(f"images/event_{event_id}_clustering.png")
+                os.makedirs("images_2", exist_ok=True)
+                c1.SaveAs(f"images_2/event_{event_id}_clustering.png")
                 # c2.SaveAs(f"images/event_{event_id}_beam_centroids.png")
+
+                # ── Vertex multiplicity: group nearby vertices, draw zoomed canvases ──────
+                vertex_group_radius = Optimize.VERTEX_GROUP_RADIUS_MM.value
+                vertex_zoom_margin  = Optimize.VERTEX_ZOOM_MARGIN_MM.value
+
+                def _find_root(par, x):
+                    while par[x] != x:
+                        par[x] = par[par[x]]
+                        x = par[x]
+                    return x
+
+                for method_tag, endpoints_list, endpoints_dict, lbl_col, type_col in [
+                    ("REG",   GMM_REG, reg_endpoints,
+                     DataArray.REGULARIZED_CDIST.value, DataArray.REGULARIZED_TRACK_TYPE.value),
+                    ("RANSAC", RANSAC, ransac_endpoints,
+                     DataArray.RANSAC_CDIST.value,      DataArray.RANSAC_TRACK_TYPE.value),
+                ]:
+                    valid_eps = [ep for ep in endpoints_list if ep.vertex is not None]
+                    if not valid_eps:
+                        continue
+
+                    # Union-find grouping by 3D vertex proximity
+                    n = len(valid_eps)
+                    par = list(range(n))
+                    positions = np.array([ep.vertex for ep in valid_eps])
+                    for i in range(n):
+                        for j in range(i + 1, n):
+                            if np.linalg.norm(positions[i] - positions[j]) <= vertex_group_radius:
+                                ri, rj = _find_root(par, i), _find_root(par, j)
+                                if ri != rj:
+                                    par[ri] = rj
+
+                    groups = {}
+                    for idx in range(n):
+                        groups.setdefault(_find_root(par, idx), []).append(valid_eps[idx])
+
+                    for grp_idx, group_eps in enumerate(groups.values()):
+                        # Axis limits from all start/end/vertex points + margin
+                        ref_pts = np.array([
+                            pt for ep in group_eps
+                            for pt in [ep.start_point_full, ep.end_point_full, ep.vertex]
+                        ])
+                        xmin_z = ref_pts[:, 0].min() - vertex_zoom_margin
+                        xmax_z = ref_pts[:, 0].max() + vertex_zoom_margin
+                        ymin_z = ref_pts[:, 1].min() - vertex_zoom_margin
+                        ymax_z = ref_pts[:, 1].max() + vertex_zoom_margin
+                        zmin_z = ref_pts[:, 2].min() - vertex_zoom_margin
+                        zmax_z = ref_pts[:, 2].max() + vertex_zoom_margin
+
+                        mult = len(group_eps)
+                        cz = root.TCanvas(
+                            f"cz_{method_tag}_{event_id}_{grp_idx}",
+                            f"{method_tag} Event {event_id} VtxGroup {grp_idx} mult={mult}",
+                            1800, 600,
+                        )
+                        cz.Divide(3, 1)
+                        zoom_objs = []
+                        colors_grp = get_unique_colors(mult)
+
+                        # Physical pixel half-sizes for TBox rendering
+                        px_dx = RunParameters.x_conversion_factor.value / 2.0
+                        px_dy = RunParameters.y_conversion_factor.value / 2.0
+                        px_dz = RunParameters.z_conversion_factor.value / 2.0
+
+                        # Draw empty frames to set zoom axes
+                        cz.cd(1)
+                        frame_xy = root.gPad.DrawFrame(xmin_z, ymin_z, xmax_z, ymax_z)
+                        frame_xy.SetTitle(
+                            f"{method_tag} XY VtxGrp {grp_idx} mult={mult};X (mm);Y (mm)"
+                        )
+                        zoom_objs.append(frame_xy)
+
+                        cz.cd(2)
+                        frame_yz = root.gPad.DrawFrame(ymin_z, zmin_z, ymax_z, zmax_z)
+                        frame_yz.SetTitle(
+                            f"{method_tag} YZ VtxGrp {grp_idx} mult={mult};Y (mm);Z (mm)"
+                        )
+                        zoom_objs.append(frame_yz)
+
+                        cz.cd(3)
+                        frame_xz = root.gPad.DrawFrame(xmin_z, zmin_z, xmax_z, zmax_z)
+                        frame_xz.SetTitle(
+                            f"{method_tag} XZ VtxGrp {grp_idx} mult={mult};X (mm);Z (mm)"
+                        )
+                        zoom_objs.append(frame_xz)
+
+                        for ep_i, ep in enumerate(group_eps):
+                            color  = colors_grp[ep_i]
+                            sp     = ep.start_point_full
+                            ep_end = ep.end_point_full
+                            vt     = ep.vertex
+                            beam_lbl = ep.closest_beam_id
+
+                            # Raw scattered-track data points (2mm×2mm physical pixel boxes)
+                            track_mask = (
+                                (data_points_3d[:, lbl_col].astype(int) == ep.track_id) &
+                                (data_points_3d[:, type_col].astype(int) == 1)
+                            )
+                            pts = data_points_3d[track_mask][:,
+                                [DataArray.X.value, DataArray.Y.value, DataArray.Z.value]]
+                            if pts.shape[0] > 0:
+                                for pad_n, ax, ay, ha, hb in [
+                                    (1, pts[:, 0], pts[:, 1], px_dx, px_dy),
+                                    (2, pts[:, 1], pts[:, 2], px_dy, px_dz),
+                                    (3, pts[:, 0], pts[:, 2], px_dx, px_dz),
+                                ]:
+                                    cz.cd(pad_n)
+                                    for k in range(len(pts)):
+                                        bx = root.TBox(
+                                            float(ax[k]) - ha, float(ay[k]) - hb,
+                                            float(ax[k]) + ha, float(ay[k]) + hb,
+                                        )
+                                        bx.SetFillColor(color)
+                                        bx.SetLineColor(color)
+                                        bx.Draw()
+                                        zoom_objs.append(bx)
+
+                            # Raw closest beam-track data points (hatched boxes, same color)
+                            if beam_lbl != -1:
+                                beam_pts_mask = (
+                                    (data_points_3d[:, lbl_col].astype(int) == beam_lbl) &
+                                    (data_points_3d[:, type_col].astype(int) == 0)
+                                )
+                                beam_pts = data_points_3d[beam_pts_mask][:,
+                                    [DataArray.X.value, DataArray.Y.value, DataArray.Z.value]]
+                                if beam_pts.shape[0] > 0:
+                                    for pad_n, ax, ay, ha, hb in [
+                                        (1, beam_pts[:, 0], beam_pts[:, 1], px_dx, px_dy),
+                                        (2, beam_pts[:, 1], beam_pts[:, 2], px_dy, px_dz),
+                                        (3, beam_pts[:, 0], beam_pts[:, 2], px_dx, px_dz),
+                                    ]:
+                                        cz.cd(pad_n)
+                                        for k in range(len(beam_pts)):
+                                            bx = root.TBox(
+                                                float(ax[k]) - ha, float(ay[k]) - hb,
+                                                float(ax[k]) + ha, float(ay[k]) + hb,
+                                            )
+                                            bx.SetFillColor(color)
+                                            bx.SetLineColor(color)
+                                            bx.SetFillStyle(3004)
+                                            bx.Draw()
+                                            zoom_objs.append(bx)
+
+                            # Fitted scattered track line (solid)
+                            cz.cd(1)
+                            sl_xy = root.TLine(float(sp[0]), float(sp[1]), float(ep_end[0]), float(ep_end[1]))
+                            sl_xy.SetLineColor(color); sl_xy.SetLineWidth(2)
+                            sl_xy.Draw(); zoom_objs.append(sl_xy)
+                            cz.cd(2)
+                            sl_yz = root.TLine(float(sp[1]), float(sp[2]), float(ep_end[1]), float(ep_end[2]))
+                            sl_yz.SetLineColor(color); sl_yz.SetLineWidth(2)
+                            sl_yz.Draw(); zoom_objs.append(sl_yz)
+                            cz.cd(3)
+                            sl_xz = root.TLine(float(sp[0]), float(sp[2]), float(ep_end[0]), float(ep_end[2]))
+                            sl_xz.SetLineColor(color); sl_xz.SetLineWidth(2)
+                            sl_xz.Draw(); zoom_objs.append(sl_xz)
+
+                            # Closest beam track line (dashed, same color)
+                            if beam_lbl != -1 and beam_lbl in endpoints_dict:
+                                bp0, bp1 = endpoints_dict[beam_lbl]
+                                cz.cd(1)
+                                bl_xy = root.TLine(float(bp0[0]), float(bp0[1]), float(bp1[0]), float(bp1[1]))
+                                bl_xy.SetLineColor(color); bl_xy.SetLineWidth(4); bl_xy.SetLineStyle(2)
+                                bl_xy.Draw(); zoom_objs.append(bl_xy)
+                                cz.cd(2)
+                                bl_yz = root.TLine(float(bp0[1]), float(bp0[2]), float(bp1[1]), float(bp1[2]))
+                                bl_yz.SetLineColor(color); bl_yz.SetLineWidth(4); bl_yz.SetLineStyle(2)
+                                bl_yz.Draw(); zoom_objs.append(bl_yz)
+                                cz.cd(3)
+                                bl_xz = root.TLine(float(bp0[0]), float(bp0[2]), float(bp1[0]), float(bp1[2]))
+                                bl_xz.SetLineColor(color); bl_xz.SetLineWidth(4); bl_xz.SetLineStyle(2)
+                                bl_xz.Draw(); zoom_objs.append(bl_xz)
+
+                            # Vertex: open circle
+                            cz.cd(1)
+                            vm_xy = root.TMarker(float(vt[0]), float(vt[1]), 24)
+                            vm_xy.SetMarkerColor(color); vm_xy.SetMarkerSize(2.0)
+                            vm_xy.Draw(); zoom_objs.append(vm_xy)
+                            cz.cd(2)
+                            vm_yz = root.TMarker(float(vt[1]), float(vt[2]), 24)
+                            vm_yz.SetMarkerColor(color); vm_yz.SetMarkerSize(2.0)
+                            vm_yz.Draw(); zoom_objs.append(vm_yz)
+                            cz.cd(3)
+                            vm_xz = root.TMarker(float(vt[0]), float(vt[2]), 24)
+                            vm_xz.SetMarkerColor(color); vm_xz.SetMarkerSize(2.0)
+                            vm_xz.Draw(); zoom_objs.append(vm_xz)
+
+                        cz.Update()
+                        cz.SaveAs(
+                            f"images_2/event_{event_id}_{method_tag}_vtxgroup_{grp_idx}.png"
+                        )
+                        root.gROOT.GetListOfCanvases().Remove(cz)
+                        del cz
