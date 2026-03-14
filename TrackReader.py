@@ -17,6 +17,8 @@ from helper_functions.functions import (
     get_directions,
     find_closest_beam_track,
     get_unique_colors,
+    angle_between,
+    calculate_phi_angle,
 )
 from regularize import Regularize
 from ransac import find_multiple_lines_ransac
@@ -31,6 +33,10 @@ class TrackEndpoints3D:
     vertex: np.ndarray = None           # closest-approach point on scattered track to beam track
     trunc_start: np.ndarray = None      # start of 40mm-truncated PCA fit
     trunc_end: np.ndarray = None        # end of 40mm-truncated PCA fit
+    theta_deg: float = None             # lab angle between beam and scattered track (0-180 deg)
+    phi_deg: float = None               # signed azimuthal angle in YZ plane (-180 to 180 deg)
+    theta2_deg: float = None            # angle from combined (scatter+beam) PCA fit
+    phi2_deg: float = None              # azimuthal from combined fit
 
 # Command-line argument parsing
 parser = argparse.ArgumentParser(description='Process events from a ROOT file.')
@@ -528,7 +534,63 @@ for entries in myTree:
                     beam_label, beam_dist, vertex, trunc_start, trunc_end = find_closest_beam_track(
                         points_xyz, start_point, dirVecTrackNorm, reg_endpoints
                     )
-                    print(f"  REG scattered {cluster_label} -> beam {beam_label} ({beam_dist:.1f} mm)")
+
+                    # Compute lab angle (theta) and azimuthal angle (phi) using truncated scatter fit
+                    theta_deg = None
+                    phi_deg = None
+                    theta2_deg = None
+                    phi2_deg = None
+                    if (beam_label != -1 and beam_label in reg_endpoints
+                            and trunc_start is not None and trunc_end is not None):
+                        bp0_a, bp1_a = reg_endpoints[beam_label]
+                        bp0_a = np.asarray(bp0_a, dtype=float)
+                        bp1_a = np.asarray(bp1_a, dtype=float)
+                        # Beam vector: from x=0 (start) toward x=x_end
+                        beam_vec_a = (bp1_a - bp0_a) if bp0_a[0] <= bp1_a[0] else (bp0_a - bp1_a)
+                        # Scatter vector: trunc_start (near beam plane) -> trunc_end (away)
+                        scat_vec_a = np.asarray(trunc_end, dtype=float) - np.asarray(trunc_start, dtype=float)
+                        theta_deg = angle_between(beam_vec_a, scat_vec_a)
+                        phi_deg = calculate_phi_angle(scat_vec_a, beam_vec_a)
+                        # Combined fit: truncated scatter pts + high-responsibility beam pts -> theta2, phi2
+                        trunc_len_c = np.linalg.norm(scat_vec_a)
+                        if trunc_len_c > 1e-9:
+                            trunc_dir_cu = scat_vec_a / trunc_len_c
+                            projs_c = (points_xyz - np.asarray(trunc_start, dtype=float)) @ trunc_dir_cu
+                            trunc_mask_c = (projs_c >= 0) & (projs_c <= trunc_len_c)
+                            trunc_scat_pts = points_xyz[trunc_mask_c]
+                        else:
+                            trunc_mask_c = np.ones(len(points_xyz), dtype=bool)
+                            trunc_scat_pts = points_xyz
+                        # Find dominant GMM component among truncated scatter points
+                        cluster_data_c = data_points_3d[cluster_mask]
+                        trunc_gmm_vals_c = cluster_data_c[trunc_mask_c, DataArray.GMM.value].astype(int)
+                        valid_gmm_c = trunc_gmm_vals_c[trunc_gmm_vals_c >= 0]
+                        hi_beam_pts_c = np.empty((0, 3), dtype=float)
+                        if len(valid_gmm_c) > 0 and responsibilities is not None:
+                            dom_gmm_c = int(np.bincount(valid_gmm_c).argmax())
+                            if dom_gmm_c < responsibilities.shape[1]:
+                                beam_all_mask_c = (
+                                    (data_points_3d[:, DataArray.REGULARIZED_BEAM_MERGED.value].astype(int) == beam_label) &
+                                    (data_points_3d[:, DataArray.REGULARIZED_TRACK_TYPE.value].astype(int) == 0)
+                                )
+                                beam_idx_c = np.where(beam_all_mask_c)[0]
+                                if len(beam_idx_c) > 0:
+                                    resp_vals_c = responsibilities[beam_idx_c, dom_gmm_c]
+                                    hi_beam_idx_c = beam_idx_c[resp_vals_c > Optimize.GAMMA.value]
+                                    if len(hi_beam_idx_c) > 0:
+                                        hi_beam_pts_c = data_points_3d[hi_beam_idx_c][:,
+                                            [DataArray.X.value, DataArray.Y.value, DataArray.Z.value]]
+                        if trunc_scat_pts.shape[0] >= 2 and hi_beam_pts_c.shape[0] >= 1:
+                            from sklearn.decomposition import PCA as _PCA_comb
+                            _combined_pts = np.vstack([trunc_scat_pts, hi_beam_pts_c])
+                            _pca_c = _PCA_comb(n_components=1)
+                            _pca_c.fit(_combined_pts)
+                            comb_dir = _pca_c.components_[0]
+                            if np.dot(comb_dir, scat_vec_a) < 0:
+                                comb_dir = -comb_dir
+                            theta2_deg = angle_between(beam_vec_a, comb_dir)
+                            phi2_deg = calculate_phi_angle(comb_dir, beam_vec_a)
+                    print(f"  REG scattered {cluster_label} -> beam {beam_label} ({beam_dist:.1f} mm)  theta={theta_deg}  phi={phi_deg}  theta2={theta2_deg}  phi2={phi2_deg}")
 
                     # Store full 3D endpoints
                     GMM_REG.append(
@@ -541,6 +603,10 @@ for entries in myTree:
                             vertex=np.asarray(vertex, dtype=float).copy() if vertex is not None else None,
                             trunc_start=np.asarray(trunc_start, dtype=float).copy() if trunc_start is not None else None,
                             trunc_end=np.asarray(trunc_end, dtype=float).copy() if trunc_end is not None else None,
+                            theta_deg=theta_deg,
+                            phi_deg=phi_deg,
+                            theta2_deg=theta2_deg,
+                            phi2_deg=phi2_deg,
                         )
                     )
 
@@ -690,7 +756,22 @@ for entries in myTree:
                     beam_label, beam_dist, vertex, trunc_start, trunc_end = find_closest_beam_track(
                         points_xyz, start_point, dirVecTrackNorm, ransac_endpoints
                     )
-                    print(f"  RANSAC scattered {cluster_label} -> beam {beam_label} ({beam_dist:.1f} mm)")
+
+                    # Compute lab angle (theta) and azimuthal angle (phi) using truncated scatter fit
+                    theta_deg = None
+                    phi_deg = None
+                    if (beam_label != -1 and beam_label in ransac_endpoints
+                            and trunc_start is not None and trunc_end is not None):
+                        bp0_b, bp1_b = ransac_endpoints[beam_label]
+                        bp0_b = np.asarray(bp0_b, dtype=float)
+                        bp1_b = np.asarray(bp1_b, dtype=float)
+                        # Beam vector: from x=0 (start) toward x=x_end
+                        beam_vec_b = (bp1_b - bp0_b) if bp0_b[0] <= bp1_b[0] else (bp0_b - bp1_b)
+                        # Scatter vector: trunc_start (near beam plane) -> trunc_end (away)
+                        scat_vec_b = np.asarray(trunc_end, dtype=float) - np.asarray(trunc_start, dtype=float)
+                        theta_deg = angle_between(beam_vec_b, scat_vec_b)
+                        phi_deg = calculate_phi_angle(scat_vec_b, beam_vec_b)
+                    print(f"  RANSAC scattered {cluster_label} -> beam {beam_label} ({beam_dist:.1f} mm)  theta={theta_deg}  phi={phi_deg}")
 
                     # Store full 3D endpoints
                     RANSAC.append(
@@ -703,6 +784,8 @@ for entries in myTree:
                             vertex=np.asarray(vertex, dtype=float).copy() if vertex is not None else None,
                             trunc_start=np.asarray(trunc_start, dtype=float).copy() if trunc_start is not None else None,
                             trunc_end=np.asarray(trunc_end, dtype=float).copy() if trunc_end is not None else None,
+                            theta_deg=theta_deg,
+                            phi_deg=phi_deg,
                         )
                     )
 
@@ -921,7 +1004,11 @@ for entries in myTree:
                         # Axis limits from all start/end/vertex points + margin
                         ref_pts = np.array([
                             pt for ep in group_eps
-                            for pt in [ep.start_point_full, ep.end_point_full, ep.vertex]
+                            for pt in [
+                                ep.trunc_start if ep.trunc_start is not None else ep.start_point_full,
+                                ep.trunc_end   if ep.trunc_end   is not None else ep.end_point_full,
+                                ep.vertex,
+                            ]
                         ])
                         xmin_z = ref_pts[:, 0].min() - vertex_zoom_margin
                         xmax_z = ref_pts[:, 0].max() + vertex_zoom_margin
@@ -939,42 +1026,39 @@ for entries in myTree:
                         cz.Divide(3, 1)
                         zoom_objs = []
                         colors_grp = get_unique_colors(mult)
+                        beam_pixel_color = root.kAzure + 2  # constant color for all beam pixels
 
                         # Physical pixel half-sizes for TBox rendering
                         px_dx = RunParameters.x_conversion_factor.value / 2.0
                         px_dy = RunParameters.y_conversion_factor.value / 2.0
                         px_dz = RunParameters.z_conversion_factor.value / 2.0
 
-                        # Draw empty frames to set zoom axes
-                        cz.cd(1)
-                        frame_xy = root.gPad.DrawFrame(xmin_z, ymin_z, xmax_z, ymax_z)
-                        frame_xy.SetTitle(
-                            f"{method_tag} XY VtxGrp {grp_idx} mult={mult};X (mm);Y (mm)"
-                        )
-                        zoom_objs.append(frame_xy)
+                        # Draw empty frames to set zoom axes, with grid lines
+                        for pad_n, x0, y0, x1, y1, title in [
+                            (1, xmin_z, ymin_z, xmax_z, ymax_z,
+                             f"{method_tag} XY VtxGrp {grp_idx} mult={mult};X (mm);Y (mm)"),
+                            (2, ymin_z, zmin_z, ymax_z, zmax_z,
+                             f"{method_tag} YZ VtxGrp {grp_idx} mult={mult};Y (mm);Z (mm)"),
+                            (3, xmin_z, zmin_z, xmax_z, zmax_z,
+                             f"{method_tag} XZ VtxGrp {grp_idx} mult={mult};X (mm);Z (mm)"),
+                        ]:
+                            cz.cd(pad_n)
+                            root.gPad.SetGridx(1)
+                            root.gPad.SetGridy(1)
+                            fr = root.gPad.DrawFrame(x0, y0, x1, y1)
+                            fr.SetTitle(title)
+                            # Tick labels every 10 mm (readable); grid follows primary ticks
+                            fr.GetXaxis().SetNdivisions(-int(round((x1 - x0) / 10.0)), False)
+                            fr.GetYaxis().SetNdivisions(-int(round((y1 - y0) / 10.0)), False)
+                            zoom_objs.append(fr)
 
-                        cz.cd(2)
-                        frame_yz = root.gPad.DrawFrame(ymin_z, zmin_z, ymax_z, zmax_z)
-                        frame_yz.SetTitle(
-                            f"{method_tag} YZ VtxGrp {grp_idx} mult={mult};Y (mm);Z (mm)"
-                        )
-                        zoom_objs.append(frame_yz)
-
-                        cz.cd(3)
-                        frame_xz = root.gPad.DrawFrame(xmin_z, zmin_z, xmax_z, zmax_z)
-                        frame_xz.SetTitle(
-                            f"{method_tag} XZ VtxGrp {grp_idx} mult={mult};X (mm);Z (mm)"
-                        )
-                        zoom_objs.append(frame_xz)
-
+                        # ── Pass 1: draw all pixel boxes (scatter + beam) ──────────────────
+                        drawn_beam_labels = set()
                         for ep_i, ep in enumerate(group_eps):
-                            color  = colors_grp[ep_i]
-                            sp     = ep.start_point_full
-                            ep_end = ep.end_point_full
-                            vt     = ep.vertex
+                            color    = colors_grp[ep_i]
                             beam_lbl = ep.closest_beam_id
 
-                            # Raw scattered-track data points (2mm×2mm physical pixel boxes)
+                            # Raw scattered-track data points (filled pixel boxes)
                             track_mask = (
                                 (data_points_3d[:, lbl_col].astype(int) == ep.track_id) &
                                 (data_points_3d[:, type_col].astype(int) == 1)
@@ -998,8 +1082,9 @@ for entries in myTree:
                                         bx.Draw()
                                         zoom_objs.append(bx)
 
-                            # Raw closest beam-track data points (hatched boxes, same color)
-                            if beam_lbl != -1:
+                            # Raw closest beam-track data points (solid filled, constant beam color)
+                            if beam_lbl != -1 and beam_lbl not in drawn_beam_labels:
+                                drawn_beam_labels.add(beam_lbl)
                                 beam_pts_mask = (
                                     (data_points_3d[:, lbl_col].astype(int) == beam_lbl) &
                                     (data_points_3d[:, type_col].astype(int) == 0)
@@ -1018,40 +1103,122 @@ for entries in myTree:
                                                 float(ax[k]) - ha, float(ay[k]) - hb,
                                                 float(ax[k]) + ha, float(ay[k]) + hb,
                                             )
-                                            bx.SetFillColor(color)
-                                            bx.SetLineColor(color)
-                                            bx.SetFillStyle(3004)
+                                            bx.SetFillColor(beam_pixel_color)
+                                            bx.SetLineColor(beam_pixel_color)
                                             bx.Draw()
                                             zoom_objs.append(bx)
 
-                            # Fitted scattered track line (solid)
+                            # Beam points with high GMM responsibility for this scattered track
+                            # (only for REG: only meaningful when beam & scatter shared the same DBSCAN cluster)
+                            if (method_tag == "REG"
+                                    and beam_lbl != -1
+                                    and responsibilities is not None
+                                    and ep.trunc_start is not None
+                                    and ep.trunc_end is not None):
+                                gamma_val = Optimize.GAMMA.value
+                                trunc_dir = (np.asarray(ep.trunc_end, dtype=float)
+                                             - np.asarray(ep.trunc_start, dtype=float))
+                                trunc_len_v = np.linalg.norm(trunc_dir)
+                                scat_all_mask = (
+                                    (data_points_3d[:, lbl_col].astype(int) == ep.track_id) &
+                                    (data_points_3d[:, type_col].astype(int) == 1)
+                                )
+                                scat_xyz_all = data_points_3d[scat_all_mask][:,
+                                    [DataArray.X.value, DataArray.Y.value, DataArray.Z.value]]
+                                if trunc_len_v > 1e-9 and scat_xyz_all.shape[0] > 0:
+                                    trunc_dir_u = trunc_dir / trunc_len_v
+                                    projs_s = (scat_xyz_all - ep.trunc_start) @ trunc_dir_u
+                                    trunc_local = (projs_s >= 0) & (projs_s <= trunc_len_v)
+                                    gmm_col = DataArray.GMM.value
+                                    scat_gmm_vals = data_points_3d[scat_all_mask][trunc_local, gmm_col].astype(int)
+                                    valid_gmm = scat_gmm_vals[scat_gmm_vals >= 0]
+                                    if len(valid_gmm) > 0:
+                                        dom_gmm = int(np.bincount(valid_gmm).argmax())
+                                        if dom_gmm < responsibilities.shape[1]:
+                                            beam_all_mask = (
+                                                (data_points_3d[:, lbl_col].astype(int) == beam_lbl) &
+                                                (data_points_3d[:, type_col].astype(int) == 0)
+                                            )
+                                            beam_idx = np.where(beam_all_mask)[0]
+                                            if len(beam_idx) > 0:
+                                                resp_vals = responsibilities[beam_idx, dom_gmm]
+                                                hi_idx = beam_idx[resp_vals > gamma_val]
+                                                if len(hi_idx) > 0:
+                                                    hi_pts = data_points_3d[hi_idx][:,
+                                                        [DataArray.X.value, DataArray.Y.value, DataArray.Z.value]]
+                                                    hi_color = root.kOrange + 3
+                                                    for pad_n, ax, ay, ha, hb in [
+                                                        (1, hi_pts[:, 0], hi_pts[:, 1], px_dx, px_dy),
+                                                        (2, hi_pts[:, 1], hi_pts[:, 2], px_dy, px_dz),
+                                                        (3, hi_pts[:, 0], hi_pts[:, 2], px_dx, px_dz),
+                                                    ]:
+                                                        cz.cd(pad_n)
+                                                        for k in range(len(hi_pts)):
+                                                            bx = root.TBox(
+                                                                float(ax[k]) - ha, float(ay[k]) - hb,
+                                                                float(ax[k]) + ha, float(ay[k]) + hb,
+                                                            )
+                                                            bx.SetFillColor(hi_color)
+                                                            bx.SetLineColor(hi_color)
+                                                            bx.Draw()
+                                                            zoom_objs.append(bx)
+                        bz_min = float(VolumeBoundaries.BEAM_ZONE_MIN.value)
+                        bz_max = float(VolumeBoundaries.BEAM_ZONE_MAX.value)
+                        for bz_y in (bz_min, bz_max):
+                            # XY pad: horizontal line at y = bz_y
+                            cz.cd(1)
+                            bz_ln_xy = root.TLine(xmin_z, bz_y, xmax_z, bz_y)
+                            bz_ln_xy.SetLineColor(root.kGreen + 2)
+                            bz_ln_xy.SetLineWidth(2)
+                            bz_ln_xy.SetLineStyle(2)
+                            bz_ln_xy.Draw()
+                            zoom_objs.append(bz_ln_xy)
+                            # YZ pad: vertical line at x = bz_y (Y is on x-axis)
+                            cz.cd(2)
+                            bz_ln_yz = root.TLine(bz_y, zmin_z, bz_y, zmax_z)
+                            bz_ln_yz.SetLineColor(root.kGreen + 2)
+                            bz_ln_yz.SetLineWidth(2)
+                            bz_ln_yz.SetLineStyle(2)
+                            bz_ln_yz.Draw()
+                            zoom_objs.append(bz_ln_yz)
+
+                        # ── Pass 2: draw fit lines, vertex markers, angle labels ──────────
+                        for ep_i, ep in enumerate(group_eps):
+                            color    = colors_grp[ep_i]
+                            sp       = ep.trunc_start if ep.trunc_start is not None else ep.start_point_full
+                            ep_end   = ep.trunc_end   if ep.trunc_end   is not None else ep.end_point_full
+                            vt       = ep.vertex
+                            beam_lbl = ep.closest_beam_id
+
+                            # Fitted scattered track line (solid black — distinct from pixel color)
+                            fit_color = root.kBlack
                             cz.cd(1)
                             sl_xy = root.TLine(float(sp[0]), float(sp[1]), float(ep_end[0]), float(ep_end[1]))
-                            sl_xy.SetLineColor(color); sl_xy.SetLineWidth(2)
+                            sl_xy.SetLineColor(fit_color); sl_xy.SetLineWidth(2)
                             sl_xy.Draw(); zoom_objs.append(sl_xy)
                             cz.cd(2)
                             sl_yz = root.TLine(float(sp[1]), float(sp[2]), float(ep_end[1]), float(ep_end[2]))
-                            sl_yz.SetLineColor(color); sl_yz.SetLineWidth(2)
+                            sl_yz.SetLineColor(fit_color); sl_yz.SetLineWidth(2)
                             sl_yz.Draw(); zoom_objs.append(sl_yz)
                             cz.cd(3)
                             sl_xz = root.TLine(float(sp[0]), float(sp[2]), float(ep_end[0]), float(ep_end[2]))
-                            sl_xz.SetLineColor(color); sl_xz.SetLineWidth(2)
+                            sl_xz.SetLineColor(fit_color); sl_xz.SetLineWidth(2)
                             sl_xz.Draw(); zoom_objs.append(sl_xz)
 
-                            # Closest beam track line (dashed, same color)
+                            # Closest beam track line (dashed, beam color)
                             if beam_lbl != -1 and beam_lbl in endpoints_dict:
                                 bp0, bp1 = endpoints_dict[beam_lbl]
                                 cz.cd(1)
                                 bl_xy = root.TLine(float(bp0[0]), float(bp0[1]), float(bp1[0]), float(bp1[1]))
-                                bl_xy.SetLineColor(color); bl_xy.SetLineWidth(4); bl_xy.SetLineStyle(2)
+                                bl_xy.SetLineColor(beam_pixel_color); bl_xy.SetLineWidth(4); bl_xy.SetLineStyle(2)
                                 bl_xy.Draw(); zoom_objs.append(bl_xy)
                                 cz.cd(2)
                                 bl_yz = root.TLine(float(bp0[1]), float(bp0[2]), float(bp1[1]), float(bp1[2]))
-                                bl_yz.SetLineColor(color); bl_yz.SetLineWidth(4); bl_yz.SetLineStyle(2)
+                                bl_yz.SetLineColor(beam_pixel_color); bl_yz.SetLineWidth(4); bl_yz.SetLineStyle(2)
                                 bl_yz.Draw(); zoom_objs.append(bl_yz)
                                 cz.cd(3)
                                 bl_xz = root.TLine(float(bp0[0]), float(bp0[2]), float(bp1[0]), float(bp1[2]))
-                                bl_xz.SetLineColor(color); bl_xz.SetLineWidth(4); bl_xz.SetLineStyle(2)
+                                bl_xz.SetLineColor(beam_pixel_color); bl_xz.SetLineWidth(4); bl_xz.SetLineStyle(2)
                                 bl_xz.Draw(); zoom_objs.append(bl_xz)
 
                             # Vertex: open circle
@@ -1067,6 +1234,37 @@ for entries in myTree:
                             vm_xz = root.TMarker(float(vt[0]), float(vt[2]), 24)
                             vm_xz.SetMarkerColor(color); vm_xz.SetMarkerSize(2.0)
                             vm_xz.Draw(); zoom_objs.append(vm_xz)
+
+                            # Angle labels: theta and phi in NDC on pad 3 (XZ)
+                            if ep.theta_deg is not None and ep.phi_deg is not None:
+                                cz.cd(3)
+                                has_comb = (
+                                    method_tag == "REG"
+                                    and ep.theta2_deg is not None
+                                    and ep.phi2_deg is not None
+                                )
+                                text_size = 0.045 if has_comb else 0.055
+                                y_step = 0.13 if has_comb else 0.10
+                                y_ndc = 0.88 - ep_i * y_step
+                                lbl = root.TLatex()
+                                lbl.SetNDC(True)
+                                lbl.SetTextColor(color)
+                                lbl.SetTextSize(text_size)
+                                lbl.DrawLatex(
+                                    0.12, y_ndc,
+                                    f"Trk{ep_i}: #theta={ep.theta_deg:.1f}#circ  #phi={ep.phi_deg:.1f}#circ  (scat)"
+                                )
+                                zoom_objs.append(lbl)
+                                if has_comb:
+                                    lbl2 = root.TLatex()
+                                    lbl2.SetNDC(True)
+                                    lbl2.SetTextColor(color)
+                                    lbl2.SetTextSize(text_size)
+                                    lbl2.DrawLatex(
+                                        0.12, y_ndc - 0.055,
+                                        f"      #theta={ep.theta2_deg:.1f}#circ  #phi={ep.phi2_deg:.1f}#circ  (comb)"
+                                    )
+                                    zoom_objs.append(lbl2)
 
                         cz.Update()
                         cz.SaveAs(

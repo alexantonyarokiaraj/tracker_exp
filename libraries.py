@@ -19,6 +19,7 @@ class DataArray(Enum):
     REGULARIZED_CDIST = 15
     
 class RunParameters(Enum):
+    sim = False
     lib_path = '/home2/user/u0100486/linux/doctorate/github/tracker_exp/lib/'
     files_path = '/home2/user/u0100486/linux/doctorate/DATA/EXPERIMENTAL/e780/'
     x_conversion_factor = 2.0  # units[mm]
@@ -59,7 +60,8 @@ class Optimize(Enum):
     SCATTERED_TRUNCATION_MM = 40.0
     VERTEX_GROUP_RADIUS_MM = 30.0
     VERTEX_ZOOM_MARGIN_MM = 40.0
-
+    GAMMA = 1.0 / 100  # minimum GMM responsibility to consider a beam point linked to a scattered track
+    ALPHA = 28.5/100    
 class RansacParameters(Enum):
     MAX_LINES = 100
     RESIDUAL_THRESHOLD = 5.0
@@ -73,3 +75,29 @@ class VolumeBoundaries(Enum):
     BEAM_ZONE_MIN = 122
     BEAM_ZONE_MAX = 132
     BEAM_CENTER = 128
+
+class Reference(Enum):
+    RANGE_EXTEND = 40
+    RANGE_BIN_SIZE = 2
+    RANGE_BIN_PER = 20
+    AREA_TOTAL_PAD = 4
+    LINE_LENGTH_THRESHOLD = Optimize.BETA.value  # Threshold to define smaller or larger tracks
+    SAVITZKY_GOLAY_WINDOW_LARGE = 7  # Window Length for Savitzky Golay Filter for large tracks
+    SAVITZKY_GOLAY_WINDOW_SMALL = 5  # Window Length for Savitzky Golay Filter for small tracks
+    THRESHOLD_PEAKS = 0.25
+
+class ConversionFactors(Enum):
+    TIME_PER_SAMPLE = 0.08  # units [us]
+    DRIFT_VELOCITY = 1.16  # units [cm/us]
+    Z_CONVERSION_FACTOR = TIME_PER_SAMPLE * DRIFT_VELOCITY * (10.0)
+    X_CONVERSION_FACTOR = 2.0  # mm
+    Y_CONVERSION_FACTOR = 2.0  # mm
+    NBINS_X = 128
+    X_START_BIN = 0 * X_CONVERSION_FACTOR
+    X_END_BIN = 128 * X_CONVERSION_FACTOR
+    NBINS_Y = 128
+    Y_START_BIN = 0 * Y_CONVERSION_FACTOR
+    Y_END_BIN = 128 * Y_CONVERSION_FACTOR
+    NBINS_Z = 512
+    Z_START_BIN = 0 * Z_CONVERSION_FACTOR
+    Z_END_BIN = 512 * Z_CONVERSION_FACTOR

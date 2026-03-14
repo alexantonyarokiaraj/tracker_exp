@@ -758,12 +758,33 @@ def find_closest_beam_track(
     dirVecTrackNorm = np.asarray(dirVecTrackNorm, dtype=float)
     dirVecTrackNorm = dirVecTrackNorm / np.linalg.norm(dirVecTrackNorm)
 
+    # Ensure dirVecTrackNorm points from start_point toward the cluster centroid
+    # (PCA sign is arbitrary; if it points backward, the [0, truncation_mm]
+    #  window would open away from the main track body)
+    cluster_centroid = scattered_points_xyz.mean(axis=0)
+    if np.dot(cluster_centroid - start_point, dirVecTrackNorm) < 0:
+        dirVecTrackNorm = -dirVecTrackNorm
+
+    # Determine which side of the beam plane the main cluster lives on
+    centroid_y = float(scattered_points_xyz[:, 1].mean())
+    bz_min = float(VolumeBoundaries.BEAM_ZONE_MIN.value)
+    bz_max = float(VolumeBoundaries.BEAM_ZONE_MAX.value)
+    beam_center = float(VolumeBoundaries.BEAM_CENTER.value)
+    if centroid_y >= beam_center:
+        # Main cluster is above beam zone: reject strays strictly below it
+        side_mask = scattered_points_xyz[:, 1] >= bz_min
+    else:
+        # Main cluster is below beam zone: reject strays strictly above it
+        side_mask = scattered_points_xyz[:, 1] <= bz_max
+
     # Keep only points with projection in [0, truncation_mm] from start_point
     offsets = (scattered_points_xyz - start_point) @ dirVecTrackNorm
     mask = (offsets >= 0) & (offsets <= truncation_mm)
-    truncated = scattered_points_xyz[mask]
+    truncated = scattered_points_xyz[mask & side_mask]
     if truncated.shape[0] < 2:
-        truncated = scattered_points_xyz  # fallback: use all points
+        truncated = scattered_points_xyz[mask]   # fallback: relax side filter
+    if truncated.shape[0] < 2:
+        truncated = scattered_points_xyz         # fallback: use all points
 
     # Fit PCA line through the truncated points
     mean_t = truncated.mean(axis=0)
@@ -833,3 +854,72 @@ def find_closest_beam_track(
             vertex = mean_t + s * dir_t
 
     return closest_label, closest_dist_mm, vertex, trunc_start, trunc_end
+
+def angle_between(v1, v2, event_id=None):
+    """
+    Calculate the angle (in degrees) between two vectors.
+
+    Parameters:
+        v1 (array-like): The first vector.
+        v2 (array-like): The second vector.
+
+    Returns:
+        float: The angle between the two vectors in degrees.
+    """
+    # Compute cosine of the angle
+    try:
+        with warnings.catch_warnings():
+            warnings.filterwarnings("error", category=RuntimeWarning)
+            cos_theta = np.dot(v1, v2) / (np.linalg.norm(v1) * np.linalg.norm(v2))
+    except ZeroDivisionError:   # Handle zero-length vectors
+        if event_id is not None:
+            print(f"Warning: Zero-length vector encountered in event {event_id}. Returning angle as 0.")
+        return 0.0  
+    except RuntimeWarning:
+        if event_id is not None:
+            print(f"Warning: Invalid value encountered in event {event_id}. Returning angle as 0.")
+        return 0.0
+    # Ensure cosine is within valid range
+    cos_theta = np.clip(cos_theta, -1.0, 1.0)
+    # Return angle in degrees
+    return np.degrees(np.arccos(cos_theta))
+
+def calculate_phi_angle(v, beam_v):
+    """
+    Calculate the angle (in degrees) of a single vector in the YZ plane
+    relative to the positive Y-axis.
+
+    Parameters:
+        v (array-like): The vector (3D).
+
+    Returns:
+        float: The signed angle of the vector in the YZ plane in degrees.
+               Returns 400 if the vector has no magnitude in the YZ plane.
+    """
+    # Project the vector onto the YZ plane (ignore x-component)
+    v_yz = np.array([v[1], v[2]])
+
+    # Compute the norm of the projected vector
+    norm_v = np.linalg.norm(v_yz)
+
+    # Handle zero-magnitude vector
+    if norm_v == 0:
+        return 400  # Return 400 for zero magnitude in YZ plane
+
+    # Reference direction is along the positive Y-axis
+    ref_vector = np.array([1, 0])  # Positive Y-axis in YZ plane
+
+    # Compute the dot product and angle
+    dot_product = np.dot(v_yz, ref_vector)
+    cos_theta = dot_product / norm_v
+    cos_theta = np.clip(cos_theta, -1.0, 1.0)  # Ensure valid range for arccos
+    angle = np.degrees(np.arccos(cos_theta))
+
+    # Compute the cross product to determine the sign of the angle
+    cross_product_z = v_yz[0] * ref_vector[1] - v_yz[1] * ref_vector[0]
+
+    # Determine the sign of the angle
+    if cross_product_z < 0:
+        angle = -angle  # Negative direction
+
+    return angle
