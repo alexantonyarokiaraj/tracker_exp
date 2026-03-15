@@ -1203,9 +1203,10 @@ for entries in myTree:
 
                     c1.Update()
                     c2.Update()
-                    os.makedirs("images_2", exist_ok=True)
-                    c1.SaveAs(f"images_2/event_{event_id}_clustering.png")
-                    # c2.SaveAs(f"images/event_{event_id}_beam_centroids.png")
+                    _images_dir = FileNames.IMAGES_DIR.value
+                    os.makedirs(_images_dir, exist_ok=True)
+                    c1.SaveAs(f"{_images_dir}/event_{event_id}_clustering.png")
+                    # c2.SaveAs(f"{_images_dir}/event_{event_id}_beam_centroids.png")
 
                 # ── Vertex multiplicity: group nearby vertices, draw zoomed canvases ──────
                 vertex_group_radius = Optimize.VERTEX_GROUP_RADIUS_MM.value
@@ -1611,7 +1612,7 @@ for entries in myTree:
 
                         cz.Update()
                         cz.SaveAs(
-                            f"images_2/event_{event_id}_{method_tag}_vtxgroup_{grp_idx}.png"
+                            f"{FileNames.IMAGES_DIR.value}/event_{event_id}_{method_tag}_vtxgroup_{grp_idx}.png"
                         )
                         root.gROOT.GetListOfCanvases().Remove(cz)
                         del cz

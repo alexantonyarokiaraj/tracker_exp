@@ -43,7 +43,7 @@ class RunParameters(Enum):
     NB_AGET = 4
     NB_CHANNEL = 68
     MIN_CLUSTER_SIZE_BEAM_MERGED = 10
-    SAVE_CANVAS = True  # Set to True to create and save PNG canvases; False for ROOT output only
+    SAVE_CANVAS = False  # Set to True to create and save PNG canvases; False for ROOT output only
 class SCAN(Enum):
     N_PROC = 1
     NN_NEIGHBOR = 6
@@ -111,3 +111,4 @@ class FileNames(Enum):
     CONFIG_FILE_EXCEL = 'LookupTable_e780_58Ni_68Ni_Alex.xlsx'
     RANGE_ENERGY_CONVERSION_SHEET = "range_energy_he_he_cf4_mixed"
     OUTPUT_DIR = '/home2/user/u0100486/linux/doctorate/github/tracker_exp/output'
+    IMAGES_DIR = '/home2/user/u0100486/linux/doctorate/github/tracker_exp/images'

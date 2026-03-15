@@ -10,6 +10,7 @@ root.gROOT.SetBatch(False)
 
 _NAN = -999.0
 output_dir = FileNames.OUTPUT_DIR.value
+images_dir = FileNames.IMAGES_DIR.value
 
 # Collect all output files
 files = sorted(glob.glob(os.path.join(output_dir, "output_run_*.root")))
@@ -229,8 +230,8 @@ keep.append(h_diff_proj_cl)
 
 c.Update()
 c.WaitPrimitive()
-os.makedirs("kinematics_images", exist_ok=True)
-c.SaveAs("kinematics_images/kinematics.png")
+os.makedirs(images_dir, exist_ok=True)
+c.SaveAs(os.path.join(images_dir, "kinematics.png"))
 
 print(f"Points — RANSAC: {len(ransac_range_angle[0])}, REG: {len(reg_range_angle[0])}, REG_comb: {len(reg_comb_range_angle[0])}")
-print("Saved to kinematics_images/kinematics.png")
+print(f"Saved to {os.path.join(images_dir, 'kinematics.png')}")
