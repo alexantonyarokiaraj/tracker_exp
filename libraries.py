@@ -43,6 +43,7 @@ class RunParameters(Enum):
     NB_AGET = 4
     NB_CHANNEL = 68
     MIN_CLUSTER_SIZE_BEAM_MERGED = 10
+    SAVE_CANVAS = True  # Set to True to create and save PNG canvases; False for ROOT output only
 class SCAN(Enum):
     N_PROC = 1
     NN_NEIGHBOR = 6
@@ -61,7 +62,8 @@ class Optimize(Enum):
     VERTEX_GROUP_RADIUS_MM = 30.0
     VERTEX_ZOOM_MARGIN_MM = 40.0
     GAMMA = 1.0 / 100  # minimum GMM responsibility to consider a beam point linked to a scattered track
-    ALPHA = 28.5/100    
+    ALPHA = 28.5/100
+    BETA = 40  # mm – line-length threshold for Savitzky-Golay window
 class RansacParameters(Enum):
     MAX_LINES = 100
     RESIDUAL_THRESHOLD = 5.0
@@ -101,3 +103,11 @@ class ConversionFactors(Enum):
     NBINS_Z = 512
     Z_START_BIN = 0 * Z_CONVERSION_FACTOR
     Z_END_BIN = 512 * Z_CONVERSION_FACTOR
+
+class FileNames(Enum):
+    CALIBRATION_PADS = 'pad_calibration_actar.txt'
+    MISSING_PADS = 'HitResponses.dat'
+    CONVERSION_TABLE = 'LT_GANIL_NewCF_marine.dat'
+    CONFIG_FILE_EXCEL = 'LookupTable_e780_58Ni_68Ni_Alex.xlsx'
+    RANGE_ENERGY_CONVERSION_SHEET = "range_energy_he_he_cf4_mixed"
+    OUTPUT_DIR = '/home2/user/u0100486/linux/doctorate/github/tracker_exp/output'
