@@ -43,7 +43,8 @@ class RunParameters(Enum):
     NB_AGET = 4
     NB_CHANNEL = 68
     MIN_CLUSTER_SIZE_BEAM_MERGED = 10
-    SAVE_CANVAS = False  # Set to True to create and save PNG canvases; False for ROOT output only
+    BEAM_ZONE_RELAXATION_MM = 4  # mm relaxation applied to each side of beam zone in kinematics filters
+    SAVE_CANVAS = True  # Set to True to create and save PNG canvases; False for ROOT output only
 class SCAN(Enum):
     N_PROC = 1
     NN_NEIGHBOR = 6
@@ -64,10 +65,13 @@ class Optimize(Enum):
     GAMMA = 1.0 / 100  # minimum GMM responsibility to consider a beam point linked to a scattered track
     ALPHA = 28.5/100
     BETA = 40  # mm – line-length threshold for Savitzky-Golay window
+    GMM_SPLIT_MIN_BEAM_PTS = 10     # min points inside beam zone to trigger forced split
+    GMM_SPLIT_MIN_OUTSIDE_PTS = 10  # min points outside beam zone to trigger forced split
+    GMM_SPLIT_MIN_COMPONENTS = 2   # min GMM components when split condition is met
 class RansacParameters(Enum):
     MAX_LINES = 100
     RESIDUAL_THRESHOLD = 5.0
-    N_ITERATIONS = 5000
+    N_ITERATIONS = 1000
     MIN_SAMPLES = 2
     MIN_INLIERS = 10
 

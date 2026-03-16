@@ -436,7 +436,7 @@ def relabel_small_clusters_to_noise(
 
 
 # Function to do the GMM Fitting
-def fit_gmm_with_bic(data, max_components=10):
+def fit_gmm_with_bic(data, max_components=10, min_components=1):
     """
     Fit Gaussian Mixture Model using BIC to select optimal components.
 
@@ -453,9 +453,9 @@ def fit_gmm_with_bic(data, max_components=10):
 
     best_bic = np.inf
     best_gmm = None
-    best_n_components = 1
+    best_n_components = max(1, min_components)
 
-    for n_components in range(1, max_components + 1):
+    for n_components in range(max(1, min_components), max_components + 1):
         n_samples = features.shape[0]
         if n_components > features.shape[0]:
             break  # Exit loop early if n_components exceeds n_samples
@@ -477,7 +477,7 @@ def fit_gmm_with_bic(data, max_components=10):
     return best_labels, best_n_components, responsibilities
 
 # Function to do GMM clustering for every dbscan cluster
-def hierarchical_clustering_with_responsibilities(data_array, max_components=10):
+def hierarchical_clustering_with_responsibilities(data_array, max_components=10, dbscan_labels=None):
     """
     Perform DBSCAN clustering and then apply GMM clustering to each DBSCAN cluster,
     computing the responsibility array for all data points.
@@ -485,28 +485,30 @@ def hierarchical_clustering_with_responsibilities(data_array, max_components=10)
     Parameters:
     - data_array (np.ndarray): Input data array with at least 3 columns (x, y, z).
     - max_components (int): Maximum number of GMM components to evaluate for BIC.
+    - dbscan_labels (np.ndarray or None): Pre-computed DBSCAN labels. If None, DBSCAN is run internally.
 
     Returns:
     - final_labels (np.ndarray): Combined labels for the entire dataset after hierarchical clustering.
     - dbscan_labels (np.ndarray): Labels from the DBSCAN clustering.
     - final_responsibilities (np.ndarray): Responsibility matrix of shape (n_points, total_gmm_clusters).
     """
-    # Step 1: Perform DBSCAN clustering
-    start_dbscan = time.perf_counter()
-    dbscan_labels, valid_cluster, epsilon_ = dbcluster(
-        data_array,
-        SCAN.N_PROC.value,
-        SCAN.NN_NEIGHBOR.value,
-        SCAN.NN_RADIUS.value,
-        SCAN.DB_MIN_SAMPLES.value,
-        SCAN.SENSITIVITY.value,
-        SCAN.EPS_THRESHOLD.value,
-        SCAN.EPS_MODE.value
-    )
-    end_dbscan = time.perf_counter()
-    elapsed_dbscan = end_dbscan - start_dbscan
-    # print(f"DBSCAN computation time: {elapsed_dbscan:.6f} seconds")
-
+    # Step 1: Use provided DBSCAN labels or compute them
+    if dbscan_labels is not None:
+        elapsed_dbscan = 0.0
+        valid_cluster = not (len(dbscan_labels) == 2 and np.all(dbscan_labels == -1))
+    else:
+        start_dbscan = time.perf_counter()
+        dbscan_labels, valid_cluster, epsilon_ = dbcluster(
+            data_array,
+            SCAN.N_PROC.value,
+            SCAN.NN_NEIGHBOR.value,
+            SCAN.NN_RADIUS.value,
+            SCAN.DB_MIN_SAMPLES.value,
+            SCAN.SENSITIVITY.value,
+            SCAN.EPS_THRESHOLD.value,
+            SCAN.EPS_MODE.value
+        )
+        elapsed_dbscan = time.perf_counter() - start_dbscan
 
     if not valid_cluster:
         print("DBSCAN clustering failed.")
@@ -527,8 +529,17 @@ def hierarchical_clustering_with_responsibilities(data_array, max_components=10)
         cluster_mask = dbscan_labels == cluster_id
         cluster_data = data_array[cluster_mask]
 
+        # Force min components if cluster has points both inside and outside the beam zone
+        _y = cluster_data[:, DataArray.Y.value]
+        _n_inside  = np.sum((_y >= VolumeBoundaries.BEAM_ZONE_MIN.value) & (_y <= VolumeBoundaries.BEAM_ZONE_MAX.value))
+        _n_outside = np.sum((_y <  VolumeBoundaries.BEAM_ZONE_MIN.value) | (_y >  VolumeBoundaries.BEAM_ZONE_MAX.value))
+        _min_comp = (Optimize.GMM_SPLIT_MIN_COMPONENTS.value
+                     if (_n_inside  >= Optimize.GMM_SPLIT_MIN_BEAM_PTS.value and
+                         _n_outside >= Optimize.GMM_SPLIT_MIN_OUTSIDE_PTS.value)
+                     else 1)
+
         start_gmm = time.perf_counter()
-        gmm_labels, n_comp, responsibilities = fit_gmm_with_bic(cluster_data, max_components=max_components)
+        gmm_labels, n_comp, responsibilities = fit_gmm_with_bic(cluster_data, max_components=max_components, min_components=_min_comp)
         end_gmm = time.perf_counter()
         elapsed_gmm.append(end_gmm - start_gmm)
         # print(f"GMM computation time: {end_gmm-start_gmm:.6f} seconds")

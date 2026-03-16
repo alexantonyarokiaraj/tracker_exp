@@ -79,7 +79,7 @@ def find_multiple_lines_ransac(data_array, max_lines=10, residual_threshold=5.0,
                                         residual_threshold=residual_threshold, max_trials=n_iterations)
 
             if np.sum(inlier_mask) < min_inliers:
-                continue
+                break
 
         else:
             break

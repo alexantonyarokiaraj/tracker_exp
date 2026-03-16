@@ -182,6 +182,18 @@ class Regularize:
         # Initialize the G matrix
         G = np.zeros((K, K))
 
+        # Pre-compute directions once per cluster (avoids O(K²) PCA calls)
+        cluster_dir_cache = {}
+        for ci in unique_clusters:
+            track = xyz_data[clusters == ci]
+            if track.size == 0:
+                cluster_dir_cache[ci] = None
+                continue
+            try:
+                cluster_dir_cache[ci] = self.func(track)
+            except Exception:
+                cluster_dir_cache[ci] = None
+
         # Iterate through pairs of clusters to calculate the custom metric
         for i in range(K):
             for j in range(i + 1, K):  # Upper triangle only
@@ -198,8 +210,13 @@ class Regularize:
 
                 # Extract directions and compute the custom metric
                 try:
-                    end_point1, start_point1, beam_vector1, dirVecTrackNorm1, track_mean1, closest_points1 = self.func(track1)
-                    end_point2, start_point2, beam_vector2, dirVecTrackNorm2, track_mean2, closest_points2 = self.func(track2)
+                    d1 = cluster_dir_cache[cluster_i]
+                    d2 = cluster_dir_cache[cluster_j]
+                    if d1 is None or d2 is None:
+                        G[i, j] = G[j, i] = 0
+                        continue
+                    end_point1, start_point1, beam_vector1, dirVecTrackNorm1, track_mean1, closest_points1 = d1
+                    end_point2, start_point2, beam_vector2, dirVecTrackNorm2, track_mean2, closest_points2 = d2
 
                     dist1 = np.linalg.norm(end_point1 - start_point2)
                     dist2 = np.linalg.norm(end_point2 - start_point1)

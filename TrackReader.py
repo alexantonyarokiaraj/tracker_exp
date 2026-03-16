@@ -1,4 +1,5 @@
 import sys
+import time
 import argparse
 import os
 from dataclasses import dataclass
@@ -206,7 +207,8 @@ for entries in myTree:
         print("---------------------------")
         print("Event-", entries.data.event)
         print("Timestamp-", entries.data.timestamp)
-        print("---------------------------") 
+        print("---------------------------")
+        _event_start_time = time.time() 
         data_points = []       
         for x in range(length):
             co = entries.data.CoboAsad[x].globalchannelid >> 11
@@ -232,6 +234,8 @@ for entries in myTree:
         # Call DBSCAN clustering
         if len(data_points_3d) > 0:
           try:
+            _t0 = time.time()
+            _t_event = _t0
             dbscan_labels, valid_cluster, epsilon_ = dbcluster(
                 data_points_3d,
                 SCAN.N_PROC.value,
@@ -246,15 +250,21 @@ for entries in myTree:
             # Add DBSCAN labels to the data array
             data_points_3d = np.column_stack((data_points_3d, dbscan_labels))
             
-            # Call hierarchical clustering with GMM (pass only X, Y, Z, Q columns)
-            gmm_labels, n_comp, responsibilities, dbscan_labels_gmm, elapsed_dbscan, elapsed_gmm = hierarchical_clustering_with_responsibilities(data_points_3d[:, :4], max_components=10)
+            # Call hierarchical clustering with GMM, reusing the DBSCAN labels already computed above
+            gmm_labels, n_comp, responsibilities, _, elapsed_dbscan, elapsed_gmm = hierarchical_clustering_with_responsibilities(data_points_3d[:, :4], max_components=10, dbscan_labels=dbscan_labels)
+            _t_dbscan_done = time.time()
+            print(f"  [timing] DBSCAN:       {elapsed_dbscan:.2f}s")
+            print(f"  [timing] GMM:          {sum(elapsed_gmm):.2f}s")
             
             # Add GMM labels to the data array
             data_points_3d = np.column_stack((data_points_3d, gmm_labels))
             
             # Call Regularize to merge GMM labels
+            _t1 = time.time()
             reg = Regularize(data_array=data_points_3d, threshold=Optimize.P_VALUE.value, merge_type='p_value', merge_algorithm='gmm')
             final_clusters = reg.merge_labels()
+            _t_reg_done = time.time()
+            print(f"  [timing] REG p-value:  {_t_reg_done - _t1:.2f}s")
             
             # Add regularized labels to the data array
             data_points_3d = np.column_stack((data_points_3d, final_clusters))
@@ -267,6 +277,7 @@ for entries in myTree:
             ransac_labels_full = -1 * np.ones(len(data_points_3d), dtype=int)
             
             if len(non_noise_data) > 0:
+                _t_ransac = time.time()
                 ransac_labels_non_noise, fitted_models = find_multiple_lines_ransac(
                     non_noise_data[:, :3],  # Use only X, Y, Z columns
                     max_lines=RansacParameters.MAX_LINES.value,
@@ -277,6 +288,7 @@ for entries in myTree:
                 )
                 # Map ransac labels back to full array
                 ransac_labels_full[non_noise_mask] = ransac_labels_non_noise
+                print(f"  [timing] RANSAC:       {time.time() - _t_ransac:.2f}s")
             
             # Add RANSAC labels to the data array
             data_points_3d = np.column_stack((data_points_3d, ransac_labels_full))
@@ -434,6 +446,8 @@ for entries in myTree:
                 ransac_cdist_labels[below_mask] = merged_below
 
             data_points_3d = np.column_stack((data_points_3d, ransac_cdist_labels))
+            _t_ransac_cdist_done = time.time()
+            print(f"  [timing] RANSAC cdist: {_t_ransac_cdist_done - _t_reg_done:.2f}s")
 
             # Additional scattered-track merging using cdist for REGULARIZED_BEAM_MERGED (above/below separately)
             # Output labels go into a new column: DataArray.REGULARIZED_CDIST
@@ -486,6 +500,8 @@ for entries in myTree:
                 reg_cdist_labels[reg_below_mask] = reg_merged_below
 
             data_points_3d = np.column_stack((data_points_3d, reg_cdist_labels))
+            _t_reg_cdist_done = time.time()
+            print(f"  [timing] REG cdist:    {_t_reg_cdist_done - _t_ransac_cdist_done:.2f}s")
 
             event_id = int(entries.data.event)
 
@@ -623,6 +639,8 @@ for entries in myTree:
 
                 scattered_labels = np.unique(reg_bm_labels[(reg_bm_labels != -1) & (reg_track_types == 1)])
                 scattered_markers = []
+                _t_reg_approach = time.time()
+                _t_resp_total = 0.0
 
                 for cluster_label in map(int, scattered_labels):
                     cluster_mask = (reg_bm_labels == cluster_label) & (reg_track_types == 1)
@@ -673,6 +691,7 @@ for entries in myTree:
                         valid_gmm_c = trunc_gmm_vals_c[trunc_gmm_vals_c >= 0]
                         hi_beam_pts_c = np.empty((0, 3), dtype=float)
                         if len(valid_gmm_c) > 0 and responsibilities is not None:
+                            _t_resp0 = time.time()
                             dom_gmm_c = int(np.bincount(valid_gmm_c).argmax())
                             if dom_gmm_c < responsibilities.shape[1]:
                                 beam_all_mask_c = (
@@ -682,6 +701,7 @@ for entries in myTree:
                                 beam_idx_c = np.where(beam_all_mask_c)[0]
                                 if len(beam_idx_c) > 0:
                                     resp_vals_c = responsibilities[beam_idx_c, dom_gmm_c]
+                                    _t_resp_total += time.time() - _t_resp0
                                     hi_beam_idx_c = beam_idx_c[resp_vals_c > Optimize.GAMMA.value]
                                     if len(hi_beam_idx_c) > 0:
                                         hi_beam_pts_c = data_points_3d[hi_beam_idx_c][:,
@@ -926,6 +946,9 @@ for entries in myTree:
                         scattered_markers.append(vtx_xz)
 
                 # Row 4: RANSAC cdist-merged labels (XY, YZ, XZ)
+                _t_reg_approach_done = time.time()
+                _reg_total = elapsed_dbscan + sum(elapsed_gmm) + (_t_reg_done - _t1) + (_t_reg_cdist_done - _t_ransac_cdist_done) + _t_resp_total
+                print(f"  [timing] REG approach total:          {_reg_total:.2f}s  (responsibilities recompute: {_t_resp_total:.2f}s)")
                 if save_canvas:
                     graphs_ransac = plot_3d_projections(data_points_3d, DataArray.RANSAC_CDIST, c1, [10, 11, 12], filter_label=filter_label)
 
@@ -940,6 +963,7 @@ for entries in myTree:
                     ransac_bm_labels[(ransac_bm_labels != -1) & (ransac_bm_labels != -20) & (ransac_track_types == 1)]
                 )
                 ransac_scattered_markers = []
+                _t_ransac_approach = time.time()
 
                 for cluster_label in map(int, ransac_scattered_labels):
                     cluster_mask = (ransac_bm_labels == cluster_label) & (ransac_track_types == 1)
@@ -1146,6 +1170,10 @@ for entries in myTree:
                         vtx_xz.SetMarkerSize(2.0)
                         vtx_xz.Draw()
                         ransac_scattered_markers.append(vtx_xz)
+
+                _t_ransac_approach_done = time.time()
+                _ransac_total = elapsed_dbscan + (_t_ransac_cdist_done - _t_ransac)
+                print(f"  [timing] RANSAC approach total:       {_ransac_total:.2f}s")
 
                 if save_canvas:
                     fitted_lines = []
@@ -1752,6 +1780,7 @@ for entries in myTree:
                 _fill_nested(ransac_br, vtx_groups_by_method.get("RANSAC", []))
                 _fill_nested(reg_br, vtx_groups_by_method.get("REG", []), is_reg=True)
                 out_tree.Fill()
+                print(f"Event {event_id} done in {time.time() - _event_start_time:.2f}s")
           except Exception as _evt_exc:
             import traceback
             traceback.print_exc()
@@ -1764,6 +1793,7 @@ for entries in myTree:
                         v.clear()
                 _br['n_vtx_groups'][0] = 0
             out_tree.Fill()
+            print(f"Event {int(entries.data.event)} failed in {time.time() - _event_start_time:.2f}s")
             continue
 
 out_file.cd()

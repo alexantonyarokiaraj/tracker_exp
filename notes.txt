@@ -1,2 +1,8 @@
 Events to look at
 301, 1569, 33
+
+source /srv/nfs/soft/spack_latest/spack/share/spack/setup-env.sh
+
+srun --cpus-per-task=32 --mem=64G --pty --x11 bash -i
+
+parallel -j 32 python3 TrackReader.py 53@{}_{} ::: 2 19 21 33 34 37 44 46 48 49 51 57 59 60 66 68 70 75 78 79 81 84 88 90 91 92 95 101 108 112 114 122
