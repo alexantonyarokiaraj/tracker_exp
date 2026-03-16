@@ -44,7 +44,7 @@ class RunParameters(Enum):
     NB_CHANNEL = 68
     MIN_CLUSTER_SIZE_BEAM_MERGED = 10
     BEAM_ZONE_RELAXATION_MM = 4  # mm relaxation applied to each side of beam zone in kinematics filters
-    SAVE_CANVAS = True  # Set to True to create and save PNG canvases; False for ROOT output only
+    SAVE_CANVAS = False  # Set to True to create and save PNG canvases; False for ROOT output only
 class SCAN(Enum):
     N_PROC = 1
     NN_NEIGHBOR = 6
@@ -53,6 +53,8 @@ class SCAN(Enum):
     SENSITIVITY = 3
     EPS_THRESHOLD = 4.0
     EPS_MODE = 7.0
+    MIN_CLUSTER_SIZE = 6
+    MIN_SAMPLES = 6
 
 class Optimize(Enum):
     P_VALUE = 0.1

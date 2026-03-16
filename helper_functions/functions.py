@@ -1,87 +1,47 @@
 from libraries import DataArray, SCAN, RunParameters, Optimize, VolumeBoundaries
-from sklearn.neighbors import NearestNeighbors
 import numpy as np
-from kneed import KneeLocator
-from sklearn.cluster import DBSCAN
+import hdbscan
 import ROOT as root
 import time
 from sklearn.mixture import GaussianMixture
 import warnings
 from sklearn.decomposition import PCA
+from sklearn.cluster import KMeans
 
-# Function to find DBSCAN Clusters
-def dbcluster(data_array, N_PROC, nn_neighbor, nn_radius, db_min_samples, sensitivity_, eps_threshold_, eps_mode_):
+# Function to find HDBSCAN Clusters
+def dbcluster(data_array, min_cluster_size, min_samples):
     """
-    Perform DBSCAN clustering on a given data array with adaptive epsilon calculation.
+    Perform HDBSCAN clustering on a given data array.
 
     Parameters:
     - data_array: np.ndarray
         Input data with at least 3 columns (x, y, z).
-    - N_PROC: int
-        Number of processes for parallel computation.
-    - nn_neighbor: int
-        Number of nearest neighbors for the NearestNeighbors algorithm.
-    - nn_radius: float
-        Radius for the NearestNeighbors algorithm.
-    - db_min_samples: int
-        Minimum samples for a cluster in DBSCAN.
-    - sensitivity_: float
-        Sensitivity for the KneeLocator.
-    - eps_threshold_: float
-        Threshold below which epsilon defaults to eps_mode_.
-    - eps_mode_: float
-        Default epsilon value if calculated epsilon is below threshold.
+    - min_cluster_size: int
+        Minimum number of points to form a cluster.
+    - min_samples: int
+        Number of samples in a neighbourhood for a point to be a core point.
 
     Returns:
     - labels_: np.ndarray
-        Cluster labels from DBSCAN or [-1, -1] in case of failure.
+        Cluster labels from HDBSCAN or [-1, -1] in case of failure.
     - valid_cluster: bool
         True if clustering is successful, False otherwise.
-    - epsilon_: float
-        The epsilon value used for DBSCAN.
     """
     valid_cluster = True
-    epsilon_ = 0  # Default epsilon value
     try:
         # Extract the first three columns (x, y, z)
         extractedData = data_array[:, DataArray.X.value:DataArray.Z.value + 1]
 
-        # Nearest neighbors setup
-        neigh = NearestNeighbors(n_neighbors=nn_neighbor)
-        nbrs = neigh.fit(extractedData)
-        distances, indices = nbrs.kneighbors(extractedData)
-        distances = np.sort(distances, axis=0)
-        dist_ = distances[:, nn_neighbor-1]
-
-        # KneeLocator to find the optimal epsilon
-        kneedle = KneeLocator(
-            x=indices[:, 0],
-            y=dist_,
-            S=sensitivity_,
-            curve='convex',
-            direction='increasing',
-            interp_method='interp1d'
-        )
-        if kneedle.knee is None:
-            raise ValueError("KneeLocator failed to identify a knee point.")
-
-        epsilon_ = round(dist_[int(kneedle.knee)], 2)
-        if epsilon_ < eps_threshold_:
-            print('EPSILON BELOW THRESHOLD, USING DEFAULT', eps_mode_, epsilon_)
-            epsilon_ = eps_mode_
-
-        # DBSCAN clustering
-        model = DBSCAN(eps=epsilon_, min_samples=db_min_samples, n_jobs=N_PROC)
+        # HDBSCAN clustering
+        model = hdbscan.HDBSCAN(min_cluster_size=min_cluster_size, min_samples=min_samples)
         labels_ = model.fit_predict(extractedData)
-        return labels_, valid_cluster, epsilon_
+        return labels_, valid_cluster
 
-    except ValueError as ve:
-        print(f"ValueError: {ve}")
     except Exception as e:
         print(f"Error: {e}")
 
     # Return defaults in case of failure
-    return np.array([-1, -1]), False, epsilon_
+    return np.array([-1, -1]), False
 
 
 def get_unique_colors(n_colors):
@@ -498,20 +458,15 @@ def hierarchical_clustering_with_responsibilities(data_array, max_components=10,
         valid_cluster = not (len(dbscan_labels) == 2 and np.all(dbscan_labels == -1))
     else:
         start_dbscan = time.perf_counter()
-        dbscan_labels, valid_cluster, epsilon_ = dbcluster(
+        dbscan_labels, valid_cluster = dbcluster(
             data_array,
-            SCAN.N_PROC.value,
-            SCAN.NN_NEIGHBOR.value,
-            SCAN.NN_RADIUS.value,
-            SCAN.DB_MIN_SAMPLES.value,
-            SCAN.SENSITIVITY.value,
-            SCAN.EPS_THRESHOLD.value,
-            SCAN.EPS_MODE.value
+            SCAN.MIN_CLUSTER_SIZE.value,
+            SCAN.MIN_SAMPLES.value
         )
         elapsed_dbscan = time.perf_counter() - start_dbscan
 
     if not valid_cluster:
-        print("DBSCAN clustering failed.")
+        print("HDBSCAN clustering failed.")
         return np.array([-1] * len(data_array)), dbscan_labels, None
 
     unique_clusters = np.unique(dbscan_labels)

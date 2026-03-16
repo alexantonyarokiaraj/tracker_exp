@@ -231,27 +231,22 @@ for entries in myTree:
                         data_points.append([posX, posY, posZ, Qvox])                                                   
         data_points_3d = np.array(data_points)
         
-        # Call DBSCAN clustering
+        # Call HDBSCAN clustering
         if len(data_points_3d) > 0:
           try:
             _t0 = time.time()
             _t_event = _t0
-            dbscan_labels, valid_cluster, epsilon_ = dbcluster(
+            dbscan_labels, valid_cluster = dbcluster(
                 data_points_3d,
-                SCAN.N_PROC.value,
-                SCAN.NN_NEIGHBOR.value,
-                SCAN.NN_RADIUS.value,
-                SCAN.DB_MIN_SAMPLES.value,
-                SCAN.SENSITIVITY.value,
-                SCAN.EPS_THRESHOLD.value,
-                SCAN.EPS_MODE.value
+                SCAN.MIN_CLUSTER_SIZE.value,
+                SCAN.MIN_SAMPLES.value
             )
             
-            # Add DBSCAN labels to the data array
+            # Add HDBSCAN labels to the data array
             data_points_3d = np.column_stack((data_points_3d, dbscan_labels))
             
             # Call hierarchical clustering with GMM, reusing the DBSCAN labels already computed above
-            gmm_labels, n_comp, responsibilities, _, elapsed_dbscan, elapsed_gmm = hierarchical_clustering_with_responsibilities(data_points_3d[:, :4], max_components=10, dbscan_labels=dbscan_labels)
+            gmm_labels, n_comp, responsibilities, _, elapsed_dbscan, elapsed_gmm = hierarchical_clustering_with_responsibilities(data_points_3d[:, :4], max_components=3, dbscan_labels=dbscan_labels)
             _t_dbscan_done = time.time()
             print(f"  [timing] DBSCAN:       {elapsed_dbscan:.2f}s")
             print(f"  [timing] GMM:          {sum(elapsed_gmm):.2f}s")
@@ -300,11 +295,22 @@ for entries in myTree:
             unique_reg_clusters = np.unique(regularized_labels[regularized_labels != -1])
             for cluster_label in unique_reg_clusters:
                 cluster_mask = regularized_labels == cluster_label
-                centroid_y = np.mean(data_points_3d[cluster_mask, DataArray.Y.value])
+                y_vals = data_points_3d[cluster_mask, DataArray.Y.value]
+                centroid_y = np.mean(y_vals)
+                n_inside = int(np.sum((y_vals >= VolumeBoundaries.BEAM_ZONE_MIN.value) & (y_vals <= VolumeBoundaries.BEAM_ZONE_MAX.value)))
+                n_outside = int(np.sum((y_vals < VolumeBoundaries.BEAM_ZONE_MIN.value) | (y_vals > VolumeBoundaries.BEAM_ZONE_MAX.value)))
                 
                 # If centroid Y is outside beam zone, mark as scattered (1)
                 if centroid_y < VolumeBoundaries.BEAM_ZONE_MIN.value or centroid_y > VolumeBoundaries.BEAM_ZONE_MAX.value:
                     regularized_track_type[cluster_mask] = 1
+                # Guard against over-merged clusters: if significant points exist both
+                # inside and outside the beam zone, the p-value merge likely absorbed a
+                # scatter track into a beam cluster — mark as scattered
+                elif (n_inside >= Optimize.GMM_SPLIT_MIN_BEAM_PTS.value and
+                      n_outside >= Optimize.GMM_SPLIT_MIN_OUTSIDE_PTS.value):
+                    regularized_track_type[cluster_mask] = 1
+                    print(f"    [diag] REG cluster {cluster_label}: reclassified beam->scattered "
+                          f"(n_inside={n_inside}, n_outside={n_outside}, centroid_y={centroid_y:.1f})")
             
             # Add regularized track type to the data array
             data_points_3d = np.column_stack((data_points_3d, regularized_track_type))
@@ -365,14 +371,14 @@ for entries in myTree:
 
             regularized_side = compute_scattered_track_side(
                 data_points_3d,
-                label_column=DataArray.REGULARIZED,
+                label_column=DataArray.REGULARIZED_BEAM_MERGED,
                 track_type_column=DataArray.REGULARIZED_TRACK_TYPE,
                 beam_zone_max=VolumeBoundaries.BEAM_ZONE_MAX.value,
                 noise_labels=(-1,),
             )
             ransac_side = compute_scattered_track_side(
                 data_points_3d,
-                label_column=DataArray.RANSAC,
+                label_column=DataArray.RANSAC_BEAM_MERGED,
                 track_type_column=DataArray.RANSAC_TRACK_TYPE,
                 beam_zone_max=VolumeBoundaries.BEAM_ZONE_MAX.value,
                 noise_labels=(-1, -20),
@@ -582,6 +588,19 @@ for entries in myTree:
 
                 c2.Update()
             
+            if not batch_mode:
+                print("  [WARNING] batch_mode=False: track processing and TTree fill are skipped. "
+                      "Set batch_mode=True for physics output.")
+                buf_run[0] = int(run_number)
+                buf_event[0] = event_id
+                buf_status[0] = 2  # status=2 for skipped (non-batch)
+                for _br in (ransac_br, reg_br):
+                    for v in _br.values():
+                        if hasattr(v, 'clear'):
+                            v.clear()
+                    _br['n_vtx_groups'][0] = 0
+                out_tree.Fill()
+
             if batch_mode:
                 if save_canvas:
                     c1 = root.TCanvas(
@@ -685,10 +704,15 @@ for entries in myTree:
                         else:
                             trunc_mask_c = np.ones(len(points_xyz), dtype=bool)
                             trunc_scat_pts = points_xyz
-                        # Find dominant GMM component among truncated scatter points
+                        # Find dominant GMM component among NON-truncated scatter points
+                        # (far from vertex, where scatter identity is unambiguous)
                         cluster_data_c = data_points_3d[cluster_mask]
-                        trunc_gmm_vals_c = cluster_data_c[trunc_mask_c, DataArray.GMM.value].astype(int)
-                        valid_gmm_c = trunc_gmm_vals_c[trunc_gmm_vals_c >= 0]
+                        non_trunc_gmm_vals_c = cluster_data_c[~trunc_mask_c, DataArray.GMM.value].astype(int)
+                        valid_gmm_c = non_trunc_gmm_vals_c[non_trunc_gmm_vals_c >= 0]
+                        # Fallback to truncated region if no valid non-truncated points
+                        if len(valid_gmm_c) == 0:
+                            trunc_gmm_vals_c = cluster_data_c[trunc_mask_c, DataArray.GMM.value].astype(int)
+                            valid_gmm_c = trunc_gmm_vals_c[trunc_gmm_vals_c >= 0]
                         hi_beam_pts_c = np.empty((0, 3), dtype=float)
                         if len(valid_gmm_c) > 0 and responsibilities is not None:
                             _t_resp0 = time.time()
@@ -702,7 +726,12 @@ for entries in myTree:
                                 if len(beam_idx_c) > 0:
                                     resp_vals_c = responsibilities[beam_idx_c, dom_gmm_c]
                                     _t_resp_total += time.time() - _t_resp0
-                                    hi_beam_idx_c = beam_idx_c[resp_vals_c > Optimize.GAMMA.value]
+                                    # Filter out invalid responsibilities (-1 means cross-HDBSCAN boundary)
+                                    valid_resp_mask = resp_vals_c >= 0
+                                    if not np.any(valid_resp_mask):
+                                        print(f"    [diag] Scatter {cluster_label}: beam {beam_label} has no valid responsibilities "
+                                              f"for GMM comp {dom_gmm_c} (cross-HDBSCAN boundary, combined fit = scatter-only)")
+                                    hi_beam_idx_c = beam_idx_c[valid_resp_mask & (resp_vals_c > Optimize.GAMMA.value)]
                                     if len(hi_beam_idx_c) > 0:
                                         hi_beam_pts_c = data_points_3d[hi_beam_idx_c][:,
                                             [DataArray.X.value, DataArray.Y.value, DataArray.Z.value]]
