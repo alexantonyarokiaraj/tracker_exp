@@ -1,0 +1,30 @@
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%%%%%%%% Reaction file for 58Ni(a,a)58Ni reaction %%%%%%%%%
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+Beam
+  Particle= 58Ni
+  Energy= 2842
+  SigmaEnergy= 0
+  SigmaX= 1.5
+ SigmaY= 1.5
+ SigmaThetaX= 0.005
+ SigmaPhiY= 0.005
+  MeanThetaX= 0
+  MeanPhiY= 0
+  MeanX= 0
+  MeanY= 0
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+TwoBodyReaction
+ Beam= 58Ni
+ Target= 4He
+ Light= 4He
+ Heavy= 58Ni
+ ExcitationEnergyLight= 0.0
+ ExcitationEnergyHeavy= 0.0
+ %CrossSectionPath= ./Data/CrossSection/ni69_d5_01.txt CS
+ %CrossSectionPath= flat.txt CS
+ ShootLight= 0
+ ShootHeavy= 1
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%

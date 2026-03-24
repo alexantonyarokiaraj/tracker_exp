@@ -3,3 +3,8 @@ test_output/
 test_images/
 images/
 jobs/
+__pycache__/
+*.pyc
+*.root
+final/
+final_seed_fixed/

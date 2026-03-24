@@ -11,6 +11,7 @@ from helper_functions.functions import (
     dbcluster,
     plot_3d_projections,
     hierarchical_clustering_with_responsibilities,
+    fit_gmm_with_bic,
     merge_beam_clusters_by_z_centroid,
     fit_beam_tracks_pca_constrained_endpoints,
     compute_scattered_track_side,
@@ -246,21 +247,111 @@ for entries in myTree:
             data_points_3d = np.column_stack((data_points_3d, dbscan_labels))
             
             # Call hierarchical clustering with GMM, reusing the DBSCAN labels already computed above
-            gmm_labels, n_comp, responsibilities, _, elapsed_dbscan, elapsed_gmm = hierarchical_clustering_with_responsibilities(data_points_3d[:, :4], max_components=3, dbscan_labels=dbscan_labels)
+            gmm_labels, n_comp, responsibilities, _, elapsed_dbscan, elapsed_gmm = hierarchical_clustering_with_responsibilities(data_points_3d[:, :4], max_components=10, dbscan_labels=dbscan_labels)
             _t_dbscan_done = time.time()
             print(f"  [timing] DBSCAN:       {elapsed_dbscan:.2f}s")
             print(f"  [timing] GMM:          {sum(elapsed_gmm):.2f}s")
-            
+
+            # Re-split any GMM component that straddles the beam zone
+            # (has significant points both inside AND outside BEAM_ZONE_MIN..BEAM_ZONE_MAX)
+            _bz_min   = VolumeBoundaries.BEAM_ZONE_MIN.value
+            _bz_max   = VolumeBoundaries.BEAM_ZONE_MAX.value
+            _smin_be  = Optimize.GMM_SPLIT_MIN_BEAM_PTS.value
+            _smin_out = Optimize.GMM_SPLIT_MIN_OUTSIDE_PTS.value
+            _smin_comp = Optimize.GMM_SPLIT_MIN_COMPONENTS.value
+            _cur_max = int(np.max(gmm_labels[gmm_labels != -1])) if np.any(gmm_labels != -1) else -1
+            for _lbl in np.unique(gmm_labels[gmm_labels != -1]):
+                _m = gmm_labels == _lbl
+                _y = data_points_3d[_m, DataArray.Y.value]
+                _n_in  = int(np.sum((_y >= _bz_min) & (_y <= _bz_max)))
+                _n_out = int(np.sum((_y <  _bz_min) | (_y >  _bz_max)))
+                if _n_in < _smin_be or _n_out < _smin_out:
+                    continue
+                # Component straddles beam boundary — re-fit with >= 2 components
+                _pts = data_points_3d[_m]  # (k, ncols) — only first 3 cols used for fit
+                _sub_lbl, _sub_n, _sub_resp = fit_gmm_with_bic(
+                    _pts, max_components=10, min_components=_smin_comp)
+                _new_globals = np.arange(_cur_max + 1, _cur_max + 1 + _sub_n)
+                _cur_max += _sub_n
+                _idx = np.where(_m)[0]
+                gmm_labels[_idx] = _new_globals[_sub_lbl]  # sub_lbl is 0-indexed
+                if responsibilities is not None and _lbl < responsibilities.shape[1]:
+                    responsibilities[_idx, _lbl] = 0.0
+                    _new_cols = np.zeros((responsibilities.shape[0], _sub_n), dtype=float)
+                    for _si in range(_sub_n):
+                        _new_cols[_idx, _si] = _sub_resp[:, _si]
+                    responsibilities = np.hstack((responsibilities, _new_cols))
+                print(f"  [resplit] GMM label {_lbl}: {_n_in} in-beam, {_n_out} out-beam "
+                      f"-> split into {_sub_n} sub-components {_new_globals.tolist()}")
+
             # Add GMM labels to the data array
             data_points_3d = np.column_stack((data_points_3d, gmm_labels))
             
-            # Call Regularize to merge GMM labels
+            # Classify GMM labels as beam/scatter by Y centroid BEFORE any merge
             _t1 = time.time()
-            reg = Regularize(data_array=data_points_3d, threshold=Optimize.P_VALUE.value, merge_type='p_value', merge_algorithm='gmm')
-            final_clusters = reg.merge_labels()
+            _gmm_arr = gmm_labels  # shape (n_points,), values are global GMM labels
+            gmm_track_type = np.zeros(len(data_points_3d), dtype=int)  # 0=beam, 1=scatter
+            _beam_axis = np.array([1.0, 0.0, 0.0])  # beam runs along X
+            _BEAM_DIR_ANGLE_MIN = 20.0  # degrees — components with theta < this are beam-like
+            for _lbl in np.unique(_gmm_arr[_gmm_arr != -1]):
+                _m = _gmm_arr == _lbl
+                _cy = np.mean(data_points_3d[_m, DataArray.Y.value])
+                if _cy < VolumeBoundaries.BEAM_ZONE_MIN.value or _cy > VolumeBoundaries.BEAM_ZONE_MAX.value:
+                    # Secondary check: if PCA direction is nearly along beam axis, keep as beam
+                    _pts_lbl = data_points_3d[_m][:, :3]
+                    if len(_pts_lbl) >= 2:
+                        try:
+                            from sklearn.decomposition import PCA as _PCA_cls
+                            _pca_cls = _PCA_cls(n_components=1)
+                            _pca_cls.fit(_pts_lbl)
+                            _d = _pca_cls.components_[0]
+                            _cos = abs(float(np.dot(_d, _beam_axis)))
+                            _cos = min(1.0, _cos)
+                            _theta_vs_beam = np.degrees(np.arccos(_cos))
+                            if _theta_vs_beam < _BEAM_DIR_ANGLE_MIN:
+                                print(f"  [cls-fix] GMM label {_lbl}: Y-centroid={_cy:.1f} outside beam zone "
+                                      f"but dir angle to beam={_theta_vs_beam:.1f}° → reclassified as beam")
+                                continue  # leave gmm_track_type[_m] = 0 (beam)
+                        except Exception:
+                            pass
+                    gmm_track_type[_m] = 1
+
+            # Separate p-value merging: beam GMM components with beam only,
+            # scatter GMM components with scatter only — prevents cross-type merging
+            _beam_gmm_mask    = (gmm_track_type == 0) & (_gmm_arr != -1)
+            _scatter_gmm_mask = (gmm_track_type == 1) & (_gmm_arr != -1)
+            final_clusters = -1 * np.ones(len(data_points_3d), dtype=int)
+
+            if np.any(_beam_gmm_mask):
+                _beam_sub = data_points_3d[_beam_gmm_mask].copy()
+                _reg_bpv = Regularize(data_array=_beam_sub, threshold=Optimize.P_VALUE.value,
+                                      merge_type='p_value', merge_algorithm='gmm')
+                _beam_merged = _reg_bpv.merge_labels().astype(int)
+                final_clusters[_beam_gmm_mask] = _beam_merged
+
+            _beam_label_max = (int(np.max(final_clusters[final_clusters != -1])) + 1
+                               if np.any(final_clusters != -1) else 0)
+
+            if np.any(_scatter_gmm_mask):
+                _scat_sub = data_points_3d[_scatter_gmm_mask].copy()
+                _reg_spv = Regularize(data_array=_scat_sub, threshold=Optimize.P_VALUE.value,
+                                      merge_type='p_value', merge_algorithm='gmm')
+                _scat_merged = _reg_spv.merge_labels().astype(int)
+                # Offset scatter labels above all beam labels to avoid collisions
+                _valid_sc = _scat_merged != -1
+                if np.any(_valid_sc):
+                    _scat_unique = np.unique(_scat_merged[_valid_sc])
+                    _scat_map = {int(_o): _beam_label_max + _i for _i, _o in enumerate(_scat_unique)}
+                    _scat_remapped = _scat_merged.copy()
+                    for _o, _n in _scat_map.items():
+                        _scat_remapped[_scat_merged == _o] = _n
+                    _scat_merged = _scat_remapped
+                _scat_merged[~_valid_sc] = -1
+                final_clusters[_scatter_gmm_mask] = _scat_merged
+
             _t_reg_done = time.time()
-            print(f"  [timing] REG p-value:  {_t_reg_done - _t1:.2f}s")
-            
+            print(f"  [timing] REG p-value (beam+scatter separate): {_t_reg_done - _t1:.2f}s")
+
             # Add regularized labels to the data array
             data_points_3d = np.column_stack((data_points_3d, final_clusters))
             
@@ -288,29 +379,19 @@ for entries in myTree:
             # Add RANSAC labels to the data array
             data_points_3d = np.column_stack((data_points_3d, ransac_labels_full))
             
-            # Classify REGULARIZED clusters as beam or scattered tracks
+            # REGULARIZED_TRACK_TYPE inherits directly from the pre-merge GMM classification:
+            # beam-only p-value merge produced beam labels, scatter-only produced scatter labels.
+            # A simple Y-centroid check confirms (and catches any edge cases).
             regularized_labels = data_points_3d[:, DataArray.REGULARIZED.value].astype(int)
-            regularized_track_type = np.zeros(len(data_points_3d), dtype=int)  # 0=beam, 1=scattered
-            
+            regularized_track_type = gmm_track_type.copy()  # start from GMM-level classification
             unique_reg_clusters = np.unique(regularized_labels[regularized_labels != -1])
             for cluster_label in unique_reg_clusters:
                 cluster_mask = regularized_labels == cluster_label
-                y_vals = data_points_3d[cluster_mask, DataArray.Y.value]
-                centroid_y = np.mean(y_vals)
-                n_inside = int(np.sum((y_vals >= VolumeBoundaries.BEAM_ZONE_MIN.value) & (y_vals <= VolumeBoundaries.BEAM_ZONE_MAX.value)))
-                n_outside = int(np.sum((y_vals < VolumeBoundaries.BEAM_ZONE_MIN.value) | (y_vals > VolumeBoundaries.BEAM_ZONE_MAX.value)))
-                
-                # If centroid Y is outside beam zone, mark as scattered (1)
+                centroid_y = np.mean(data_points_3d[cluster_mask, DataArray.Y.value])
                 if centroid_y < VolumeBoundaries.BEAM_ZONE_MIN.value or centroid_y > VolumeBoundaries.BEAM_ZONE_MAX.value:
                     regularized_track_type[cluster_mask] = 1
-                # Guard against over-merged clusters: if significant points exist both
-                # inside and outside the beam zone, the p-value merge likely absorbed a
-                # scatter track into a beam cluster — mark as scattered
-                elif (n_inside >= Optimize.GMM_SPLIT_MIN_BEAM_PTS.value and
-                      n_outside >= Optimize.GMM_SPLIT_MIN_OUTSIDE_PTS.value):
-                    regularized_track_type[cluster_mask] = 1
-                    print(f"    [diag] REG cluster {cluster_label}: reclassified beam->scattered "
-                          f"(n_inside={n_inside}, n_outside={n_outside}, centroid_y={centroid_y:.1f})")
+                else:
+                    regularized_track_type[cluster_mask] = 0
             
             # Add regularized track type to the data array
             data_points_3d = np.column_stack((data_points_3d, regularized_track_type))
@@ -509,6 +590,34 @@ for entries in myTree:
             _t_reg_cdist_done = time.time()
             print(f"  [timing] REG cdist:    {_t_reg_cdist_done - _t_ransac_cdist_done:.2f}s")
 
+            # ── Shared HDBSCAN beam: classify HDB clusters, merge by Z centroid ──────────
+            # These shared endpoints are used by BOTH REG and RANSAC scatter association,
+            # making the beam definition independent of the scatter reconstruction method.
+            _hdb_col = data_points_3d[:, DataArray.DBSCAN.value].astype(int)
+            hdb_track_type = np.zeros(len(data_points_3d), dtype=int)
+            for _lbl in np.unique(_hdb_col[_hdb_col != -1]):
+                _m = _hdb_col == _lbl
+                _cy = np.mean(data_points_3d[_m, DataArray.Y.value])
+                if _cy < VolumeBoundaries.BEAM_ZONE_MIN.value or _cy > VolumeBoundaries.BEAM_ZONE_MAX.value:
+                    hdb_track_type[_m] = 1
+
+            hdb_beam_merged_arr, hdb_z_before, hdb_z_after, _ = merge_beam_clusters_by_z_centroid(
+                data_points_3d,
+                label_column=DataArray.DBSCAN,
+                track_type_column=None,
+                z_threshold=z_threshold,
+                noise_labels=(-1,),
+                track_type_array=hdb_track_type,
+            )
+            hdb_bm_filtered = relabel_small_clusters_to_noise(
+                hdb_beam_merged_arr,
+                min_cluster_size=min_cluster_size,
+                noise_labels=(-1,),
+                output_noise_label=-1,
+            )
+            # Append HDB_TRACK_TYPE (col 16) and HDB_BEAM_MERGED (col 17)
+            data_points_3d = np.column_stack((data_points_3d, hdb_track_type, hdb_bm_filtered))
+
             event_id = int(entries.data.event)
 
             # Per-event scattered-track endpoint stores (3D)
@@ -624,28 +733,19 @@ for entries in myTree:
                     graphs_reg = plot_3d_projections(data_points_3d, DataArray.REGULARIZED_CDIST, c1, [7, 8, 9], filter_label=filter_label)
 
                 # Constrained PCA line fits for beam tracks (fixed XY endpoints)
+                # Derived from HDBSCAN beam clusters — same endpoints used by BOTH REG and RANSAC
                 x_start = RunParameters.x_start_bin.value
                 x_end = RunParameters.x_end_bin.value
                 y_fixed = VolumeBoundaries.BEAM_CENTER.value
 
-                reg_endpoints = fit_beam_tracks_pca_constrained_endpoints(
+                shared_beam_endpoints = fit_beam_tracks_pca_constrained_endpoints(
                     data_points_3d,
-                    label_column=DataArray.REGULARIZED_BEAM_MERGED,
-                    track_type_column=DataArray.REGULARIZED_TRACK_TYPE,
+                    label_column=DataArray.HDB_BEAM_MERGED,
+                    track_type_column=DataArray.HDB_TRACK_TYPE,
                     x_start=x_start,
                     x_end=x_end,
                     y_fixed=y_fixed,
                     noise_labels=(-1,),
-                    beam_value=0,
-                )
-                ransac_endpoints = fit_beam_tracks_pca_constrained_endpoints(
-                    data_points_3d,
-                    label_column=DataArray.RANSAC_BEAM_MERGED,
-                    track_type_column=DataArray.RANSAC_TRACK_TYPE,
-                    x_start=x_start,
-                    x_end=x_end,
-                    y_fixed=y_fixed,
-                    noise_labels=(-1, -20),
                     beam_value=0,
                 )
 
@@ -673,7 +773,7 @@ for entries in myTree:
                         continue
 
                     beam_label, beam_dist, vertex, trunc_start, trunc_end = find_closest_beam_track(
-                        points_xyz, start_point, dirVecTrackNorm, reg_endpoints
+                        points_xyz, start_point, dirVecTrackNorm, shared_beam_endpoints
                     )
 
                     # Compute lab angle (theta) and azimuthal angle (phi) using truncated scatter fit
@@ -683,9 +783,9 @@ for entries in myTree:
                     phi2_deg = None
                     comb_dir_unit = None
                     vertex2 = None
-                    if (beam_label != -1 and beam_label in reg_endpoints
+                    if (beam_label != -1 and beam_label in shared_beam_endpoints
                             and trunc_start is not None and trunc_end is not None):
-                        bp0_a, bp1_a = reg_endpoints[beam_label]
+                        bp0_a, bp1_a = shared_beam_endpoints[beam_label]
                         bp0_a = np.asarray(bp0_a, dtype=float)
                         bp1_a = np.asarray(bp1_a, dtype=float)
                         # Beam vector: from x=0 (start) toward x=x_end
@@ -718,9 +818,10 @@ for entries in myTree:
                             _t_resp0 = time.time()
                             dom_gmm_c = int(np.bincount(valid_gmm_c).argmax())
                             if dom_gmm_c < responsibilities.shape[1]:
+                                # Use HDB_BEAM_MERGED so beam point selection is independent of Regularize
                                 beam_all_mask_c = (
-                                    (data_points_3d[:, DataArray.REGULARIZED_BEAM_MERGED.value].astype(int) == beam_label) &
-                                    (data_points_3d[:, DataArray.REGULARIZED_TRACK_TYPE.value].astype(int) == 0)
+                                    (data_points_3d[:, DataArray.HDB_BEAM_MERGED.value].astype(int) == beam_label) &
+                                    (data_points_3d[:, DataArray.HDB_TRACK_TYPE.value].astype(int) == 0)
                                 )
                                 beam_idx_c = np.where(beam_all_mask_c)[0]
                                 if len(beam_idx_c) > 0:
@@ -749,9 +850,9 @@ for entries in myTree:
                             phi2_deg = calculate_phi_angle(comb_dir, beam_vec_a)
                             comb_dir_unit = comb_dir.copy()
                             # Recompute vertex using combined direction (skew-line closest approach)
-                            if beam_label != -1 and beam_label in reg_endpoints:
-                                bp0_v2 = np.asarray(reg_endpoints[beam_label][0], dtype=float)
-                                bp1_v2 = np.asarray(reg_endpoints[beam_label][1], dtype=float)
+                            if beam_label != -1 and beam_label in shared_beam_endpoints:
+                                bp0_v2 = np.asarray(shared_beam_endpoints[beam_label][0], dtype=float)
+                                bp1_v2 = np.asarray(shared_beam_endpoints[beam_label][1], dtype=float)
                                 d_beam_v2 = bp1_v2 - bp0_v2
                                 norm_v2 = np.linalg.norm(d_beam_v2)
                                 if norm_v2 > 1e-9:
@@ -925,8 +1026,8 @@ for entries in myTree:
                     scattered_markers.append(scat_ln_xz)
 
                     # Closest beam-track line (dashed, same color)
-                    if beam_label != -1 and beam_label in reg_endpoints:
-                        bp0, bp1 = reg_endpoints[beam_label]
+                    if beam_label != -1 and beam_label in shared_beam_endpoints:
+                        bp0, bp1 = shared_beam_endpoints[beam_label]
                         c1.cd(7)
                         bm_ln_xy = root.TLine(float(bp0[0]), float(bp0[1]), float(bp1[0]), float(bp1[1]))
                         bm_ln_xy.SetLineColor(marker_color)
@@ -1006,15 +1107,15 @@ for entries in myTree:
                         continue
 
                     beam_label, beam_dist, vertex, trunc_start, trunc_end = find_closest_beam_track(
-                        points_xyz, start_point, dirVecTrackNorm, ransac_endpoints
+                        points_xyz, start_point, dirVecTrackNorm, shared_beam_endpoints
                     )
 
                     # Compute lab angle (theta) and azimuthal angle (phi) using truncated scatter fit
                     theta_deg = None
                     phi_deg = None
-                    if (beam_label != -1 and beam_label in ransac_endpoints
+                    if (beam_label != -1 and beam_label in shared_beam_endpoints
                             and trunc_start is not None and trunc_end is not None):
-                        bp0_b, bp1_b = ransac_endpoints[beam_label]
+                        bp0_b, bp1_b = shared_beam_endpoints[beam_label]
                         bp0_b = np.asarray(bp0_b, dtype=float)
                         bp1_b = np.asarray(bp1_b, dtype=float)
                         # Beam vector: from x=0 (start) toward x=x_end
@@ -1151,8 +1252,8 @@ for entries in myTree:
                     ransac_scattered_markers.append(scat_ln_xz)
 
                     # Closest beam-track line (dashed, same color)
-                    if beam_label != -1 and beam_label in ransac_endpoints:
-                        bp0, bp1 = ransac_endpoints[beam_label]
+                    if beam_label != -1 and beam_label in shared_beam_endpoints:
+                        bp0, bp1 = shared_beam_endpoints[beam_label]
                         c1.cd(10)
                         bm_ln_xy = root.TLine(float(bp0[0]), float(bp0[1]), float(bp1[0]), float(bp1[1]))
                         bm_ln_xy.SetLineColor(marker_color)
@@ -1224,7 +1325,7 @@ for entries in myTree:
                     line_xy_ransac.Draw()
                     fitted_lines.append(line_xy_ransac)
 
-                    for (p0, p1) in reg_endpoints.values():
+                    for (p0, p1) in shared_beam_endpoints.values():
                         c1.cd(8)
                         line_yz = root.TLine(y_fixed, p0[2], y_fixed, p1[2])
                         line_yz.SetLineColor(root.kBlack)
@@ -1241,7 +1342,7 @@ for entries in myTree:
                         line_xz.Draw()
                         fitted_lines.append(line_xz)
 
-                    for (p0, p1) in ransac_endpoints.values():
+                    for (p0, p1) in shared_beam_endpoints.values():
                         c1.cd(11)
                         line_yz = root.TLine(y_fixed, p0[2], y_fixed, p1[2])
                         line_yz.SetLineColor(root.kBlack)
@@ -1276,12 +1377,13 @@ for entries in myTree:
                     return x
 
                 vtx_groups_by_method = {}
-                for method_tag, endpoints_list, endpoints_dict, lbl_col, type_col in [
-                    ("REG",   GMM_REG, reg_endpoints,
+                for method_tag, endpoints_list, lbl_col, type_col in [
+                    ("REG",   GMM_REG,
                      DataArray.REGULARIZED_CDIST.value, DataArray.REGULARIZED_TRACK_TYPE.value),
-                    ("RANSAC", RANSAC, ransac_endpoints,
+                    ("RANSAC", RANSAC,
                      DataArray.RANSAC_CDIST.value,      DataArray.RANSAC_TRACK_TYPE.value),
                 ]:
+                    endpoints_dict = shared_beam_endpoints
                     valid_eps = [ep for ep in endpoints_list if ep.vertex is not None]
                     if not valid_eps:
                         continue
@@ -1330,7 +1432,7 @@ for entries in myTree:
                         cz.Divide(3, 2)
                         zoom_objs = []
                         colors_grp = get_unique_colors(mult)
-                        beam_pixel_color = root.kAzure + 2  # constant color for all beam pixels
+                        beam_pixel_color = root.kGray + 2  # gray: never produced by HSV rainbow in get_unique_colors
 
                         # Physical pixel half-sizes for TBox rendering
                         px_dx = RunParameters.x_conversion_factor.value / 2.0
@@ -1389,9 +1491,9 @@ for entries in myTree:
                             # Raw closest beam-track data points (solid filled, constant beam color)
                             if beam_lbl != -1 and beam_lbl not in drawn_beam_labels:
                                 drawn_beam_labels.add(beam_lbl)
+                                # Use HDB_BEAM_MERGED for beam pixel lookup (shared, method-independent)
                                 beam_pts_mask = (
-                                    (data_points_3d[:, lbl_col].astype(int) == beam_lbl) &
-                                    (data_points_3d[:, type_col].astype(int) == 0)
+                                    data_points_3d[:, DataArray.HDB_BEAM_MERGED.value].astype(int) == beam_lbl
                                 )
                                 beam_pts = data_points_3d[beam_pts_mask][:,
                                     [DataArray.X.value, DataArray.Y.value, DataArray.Z.value]]

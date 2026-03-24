@@ -17,6 +17,8 @@ class DataArray(Enum):
     RANSAC_SIDE = 13
     RANSAC_CDIST = 14
     REGULARIZED_CDIST = 15
+    HDB_TRACK_TYPE = 16   # beam(0)/scatter(1) classification of each HDBSCAN cluster
+    HDB_BEAM_MERGED = 17  # Z-merged HDBSCAN beam clusters (shared endpoints for REG and RANSAC)
     
 class RunParameters(Enum):
     sim = False
@@ -71,9 +73,9 @@ class Optimize(Enum):
     GMM_SPLIT_MIN_OUTSIDE_PTS = 10  # min points outside beam zone to trigger forced split
     GMM_SPLIT_MIN_COMPONENTS = 2   # min GMM components when split condition is met
 class RansacParameters(Enum):
-    MAX_LINES = 100
+    MAX_LINES = 10
     RESIDUAL_THRESHOLD = 5.0
-    N_ITERATIONS = 1000
+    N_ITERATIONS = 5000
     MIN_SAMPLES = 2
     MIN_INLIERS = 10
 
@@ -116,5 +118,6 @@ class FileNames(Enum):
     CONVERSION_TABLE = 'LT_GANIL_NewCF_marine.dat'
     CONFIG_FILE_EXCEL = 'LookupTable_e780_58Ni_68Ni_Alex.xlsx'
     RANGE_ENERGY_CONVERSION_SHEET = "range_energy_he_he_cf4_mixed"
-    OUTPUT_DIR = '/home2/user/u0100486/linux/doctorate/github/tracker_exp/output'
+    OUTPUT_DIR = '/home2/user/u0100486/linux/doctorate/github/tracker_exp/final_seed_fixed'
+    KINEMATICS_INPUT_DIR = '/home2/user/u0100486/linux/doctorate/github/tracker_exp/final_seed_fixed'
     IMAGES_DIR = '/home2/user/u0100486/linux/doctorate/github/tracker_exp/images'

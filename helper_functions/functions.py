@@ -214,16 +214,22 @@ def merge_beam_clusters_by_z_centroid(
     noise_labels=(-1,),
     beam_value=0,
     z_column=DataArray.Z,
+    track_type_array=None,
 ):
     if isinstance(label_column, DataArray):
         label_column = label_column.value
-    if isinstance(track_type_column, DataArray):
-        track_type_column = track_type_column.value
     if isinstance(z_column, DataArray):
         z_column = z_column.value
 
     labels = data_array[:, label_column].astype(int)
-    track_types = data_array[:, track_type_column].astype(int)
+
+    # Allow caller to pass a pre-computed track_type_array instead of a column index
+    if track_type_array is not None:
+        track_types = np.asarray(track_type_array, dtype=int)
+    else:
+        if isinstance(track_type_column, DataArray):
+            track_type_column = track_type_column.value
+        track_types = data_array[:, track_type_column].astype(int)
     merged_labels = np.copy(labels)
 
     beam_mask = track_types == beam_value
