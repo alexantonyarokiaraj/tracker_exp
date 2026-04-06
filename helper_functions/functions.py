@@ -6,24 +6,27 @@ import time
 from sklearn.mixture import GaussianMixture
 import warnings
 from sklearn.decomposition import PCA
-from sklearn.cluster import KMeans
+from sklearn.cluster import KMeans, DBSCAN
 
-# Function to find HDBSCAN Clusters
-def dbcluster(data_array, min_cluster_size, min_samples):
+# Function to find HDBSCAN or DBSCAN Clusters
+def dbcluster(data_array, min_cluster_size, min_samples, use_hdbscan=True):
     """
-    Perform HDBSCAN clustering on a given data array.
+    Perform HDBSCAN or DBSCAN clustering on a given data array.
 
     Parameters:
     - data_array: np.ndarray
         Input data with at least 3 columns (x, y, z).
     - min_cluster_size: int
-        Minimum number of points to form a cluster.
+        Minimum number of points to form a cluster (HDBSCAN only).
     - min_samples: int
         Number of samples in a neighbourhood for a point to be a core point.
+    - use_hdbscan: bool
+        If True (default), use HDBSCAN. If False, use DBSCAN with
+        eps=SCAN.EPS_THRESHOLD and min_samples=SCAN.DB_MIN_SAMPLES.
 
     Returns:
     - labels_: np.ndarray
-        Cluster labels from HDBSCAN or [-1, -1] in case of failure.
+        Cluster labels or [-1, -1] in case of failure.
     - valid_cluster: bool
         True if clustering is successful, False otherwise.
     """
@@ -32,8 +35,10 @@ def dbcluster(data_array, min_cluster_size, min_samples):
         # Extract the first three columns (x, y, z)
         extractedData = data_array[:, DataArray.X.value:DataArray.Z.value + 1]
 
-        # HDBSCAN clustering
-        model = hdbscan.HDBSCAN(min_cluster_size=min_cluster_size, min_samples=min_samples)
+        if use_hdbscan:
+            model = hdbscan.HDBSCAN(min_cluster_size=min_cluster_size, min_samples=min_samples)
+        else:
+            model = DBSCAN(eps=SCAN.EPS_THRESHOLD.value, min_samples=SCAN.DB_MIN_SAMPLES.value)
         labels_ = model.fit_predict(extractedData)
         return labels_, valid_cluster
 
@@ -67,7 +72,7 @@ def get_unique_colors(n_colors):
     return colors
 
 
-def plot_3d_projections(data_array, color_column_idx, canvas, pad_positions=[1, 2, 3], filter_label=None):
+def plot_3d_projections(data_array, color_column_idx, canvas, pad_positions=[1, 2, 3], filter_label=None, fixed_colors=None):
     """
     Plot 3D projections (XY, YZ, XZ) of data array colored by specified column.
     
@@ -82,6 +87,9 @@ def plot_3d_projections(data_array, color_column_idx, canvas, pad_positions=[1, 
         Pad positions for XY, YZ, XZ projections (default: [1, 2, 3]).
     - filter_label: int or None
         If specified, only plot points with this label (default: None, plot all labels).
+    - fixed_colors: dict or None
+        Optional mapping {label_value: ROOT_color_int} to override automatic color assignment.
+        Labels not in the dict fall back to automatic colors.
     
     Returns:
     - graphs: dict
@@ -103,8 +111,10 @@ def plot_3d_projections(data_array, color_column_idx, canvas, pad_positions=[1, 
     
     colors_list = get_unique_colors(len(non_noise_labels))
     
-    # Create a mapping from label to color
+    # Create a mapping from label to color (fixed_colors overrides automatic assignment)
     label_to_color = {label: colors_list[idx] for idx, label in enumerate(non_noise_labels)}
+    if fixed_colors:
+        label_to_color.update(fixed_colors)
     
     # Store graph objects to prevent garbage collection
     graphs = {

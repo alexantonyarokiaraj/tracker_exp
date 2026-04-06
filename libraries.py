@@ -118,6 +118,6 @@ class FileNames(Enum):
     CONVERSION_TABLE = 'LT_GANIL_NewCF_marine.dat'
     CONFIG_FILE_EXCEL = 'LookupTable_e780_58Ni_68Ni_Alex.xlsx'
     RANGE_ENERGY_CONVERSION_SHEET = "range_energy_he_he_cf4_mixed"
-    OUTPUT_DIR = '/home2/user/u0100486/linux/doctorate/github/tracker_exp/final_seed_fixed'
-    KINEMATICS_INPUT_DIR = '/home2/user/u0100486/linux/doctorate/github/tracker_exp/final_seed_fixed'
-    IMAGES_DIR = '/home2/user/u0100486/linux/doctorate/github/tracker_exp/images'
+    OUTPUT_DIR = '/home2/user/u0100486/linux/doctorate/github/tracker_exp/seed_fixed'
+    KINEMATICS_INPUT_DIR = '/home2/user/u0100486/linux/doctorate/github/tracker_exp/seed_fixed'
+    IMAGES_DIR = '/home2/user/u0100486/linux/doctorate/github/tracker_exp/images/'
