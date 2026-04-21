@@ -120,4 +120,4 @@ class FileNames(Enum):
     RANGE_ENERGY_CONVERSION_SHEET = "range_energy_he_he_cf4_mixed"
     OUTPUT_DIR = '/home2/user/u0100486/linux/doctorate/github/tracker_exp/seed_fixed'
     KINEMATICS_INPUT_DIR = '/home2/user/u0100486/linux/doctorate/github/tracker_exp/seed_fixed'
-    IMAGES_DIR = '/home2/user/u0100486/linux/doctorate/github/tracker_exp/images/'
+    IMAGES_DIR = '/home2/user/u0100486/linux/doctorate/github/tracker_exp/images'

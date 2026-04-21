@@ -1458,8 +1458,38 @@ for entries in myTree:
                             fr.GetYaxis().SetNdivisions(-int(round((y1 - y0) / 10.0)), False)
                             zoom_objs.append(fr)
 
-                        # ── Pass 1: draw all pixel boxes (scatter + beam) ──────────────────
+                        # ── Pass 1a: draw beam pixel boxes first ──────────────────────────
                         drawn_beam_labels = set()
+                        for ep_i, ep in enumerate(group_eps):
+                            beam_lbl = ep.closest_beam_id
+
+                            # Raw closest beam-track data points (solid filled, constant beam color)
+                            if beam_lbl != -1 and beam_lbl not in drawn_beam_labels:
+                                drawn_beam_labels.add(beam_lbl)
+                                # Use HDB_BEAM_MERGED for beam pixel lookup (shared, method-independent)
+                                beam_pts_mask = (
+                                    data_points_3d[:, DataArray.HDB_BEAM_MERGED.value].astype(int) == beam_lbl
+                                )
+                                beam_pts = data_points_3d[beam_pts_mask][:,
+                                    [DataArray.X.value, DataArray.Y.value, DataArray.Z.value]]
+                                if beam_pts.shape[0] > 0:
+                                    for pad_n, ax, ay, ha, hb in [
+                                        (1, beam_pts[:, 0], beam_pts[:, 1], px_dx, px_dy),
+                                        (2, beam_pts[:, 1], beam_pts[:, 2], px_dy, px_dz),
+                                        (3, beam_pts[:, 0], beam_pts[:, 2], px_dx, px_dz),
+                                    ]:
+                                        cz.cd(pad_n)
+                                        for k in range(len(beam_pts)):
+                                            bx = root.TBox(
+                                                float(ax[k]) - ha, float(ay[k]) - hb,
+                                                float(ax[k]) + ha, float(ay[k]) + hb,
+                                            )
+                                            bx.SetFillColor(beam_pixel_color)
+                                            bx.SetLineColor(beam_pixel_color)
+                                            bx.Draw()
+                                            zoom_objs.append(bx)
+
+                        # ── Pass 1b: draw scatter pixel boxes on top of beam ───────────────
                         for ep_i, ep in enumerate(group_eps):
                             color    = colors_grp[ep_i]
                             beam_lbl = ep.closest_beam_id
@@ -1487,32 +1517,6 @@ for entries in myTree:
                                         bx.SetLineColor(color)
                                         bx.Draw()
                                         zoom_objs.append(bx)
-
-                            # Raw closest beam-track data points (solid filled, constant beam color)
-                            if beam_lbl != -1 and beam_lbl not in drawn_beam_labels:
-                                drawn_beam_labels.add(beam_lbl)
-                                # Use HDB_BEAM_MERGED for beam pixel lookup (shared, method-independent)
-                                beam_pts_mask = (
-                                    data_points_3d[:, DataArray.HDB_BEAM_MERGED.value].astype(int) == beam_lbl
-                                )
-                                beam_pts = data_points_3d[beam_pts_mask][:,
-                                    [DataArray.X.value, DataArray.Y.value, DataArray.Z.value]]
-                                if beam_pts.shape[0] > 0:
-                                    for pad_n, ax, ay, ha, hb in [
-                                        (1, beam_pts[:, 0], beam_pts[:, 1], px_dx, px_dy),
-                                        (2, beam_pts[:, 1], beam_pts[:, 2], px_dy, px_dz),
-                                        (3, beam_pts[:, 0], beam_pts[:, 2], px_dx, px_dz),
-                                    ]:
-                                        cz.cd(pad_n)
-                                        for k in range(len(beam_pts)):
-                                            bx = root.TBox(
-                                                float(ax[k]) - ha, float(ay[k]) - hb,
-                                                float(ax[k]) + ha, float(ay[k]) + hb,
-                                            )
-                                            bx.SetFillColor(beam_pixel_color)
-                                            bx.SetLineColor(beam_pixel_color)
-                                            bx.Draw()
-                                            zoom_objs.append(bx)
 
                             # Beam points with high GMM responsibility for this scattered track
                             # (only for REG: only meaningful when beam & scatter shared the same DBSCAN cluster)
@@ -1596,8 +1600,8 @@ for entries in myTree:
                             vt       = ep.vertex
                             beam_lbl = ep.closest_beam_id
 
-                            # Fitted scattered track line (solid black — distinct from pixel color)
-                            fit_color = root.kBlack
+                            # Fitted scattered track line (same colour as its pixels for clarity)
+                            fit_color = color
                             cz.cd(1)
                             sl_xy = root.TLine(float(sp[0]), float(sp[1]), float(ep_end[0]), float(ep_end[1]))
                             sl_xy.SetLineColor(fit_color); sl_xy.SetLineWidth(2)

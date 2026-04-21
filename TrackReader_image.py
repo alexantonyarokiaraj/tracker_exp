@@ -59,12 +59,6 @@ parser = argparse.ArgumentParser(description='Process events from a ROOT file.')
 parser.add_argument('run_info', nargs='?', default='53@0_9999', help='Format: runnumber@start_event_end_event (default: 53@0_9999)')
 args = parser.parse_args()
 save_canvas = True
-save_root = False
-hdbscan = False
-compare_clustering = False   # if True, run both HDBSCAN and DBSCAN and report events where DBSCAN finds far fewer clusters
-compare_min_hdb_clusters = 3   # minimum HDBSCAN clusters to consider the event interesting
-compare_max_db_ratio = 0.5     # flag if DBSCAN n_clusters <= this fraction of HDBSCAN n_clusters
-_cluster_comparison_log = []   # populated when compare_clustering=True
 
 # Extract run number and event range
 run_number, event_range = args.run_info.split('@')
@@ -137,20 +131,16 @@ def range_energy_calculate(range_value):
 
 # ── Output ROOT file with TTree ────────────────────────────────────────────
 from array import array as c_array
+os.makedirs(FileNames.OUTPUT_DIR.value, exist_ok=True)
+out_file = root.TFile(os.path.join(FileNames.OUTPUT_DIR.value, f"output_run_{run_number}_{start_event}_{end_event}.root"), "RECREATE")
+out_tree = root.TTree("track_data", "Per-event track analysis results")
+
 buf_run     = c_array('i', [0])
 buf_event   = c_array('i', [0])
 buf_status  = c_array('i', [0])  # 0 = OK, 1 = exception
-
-if save_root:
-    os.makedirs(FileNames.OUTPUT_DIR.value, exist_ok=True)
-    out_file = root.TFile(os.path.join(FileNames.OUTPUT_DIR.value, f"output_run_{run_number}_{start_event}_{end_event}.root"), "RECREATE")
-    out_tree = root.TTree("track_data", "Per-event track analysis results")
-    out_tree.Branch("run_number",    buf_run,    "run_number/I")
-    out_tree.Branch("event_id",      buf_event,  "event_id/I")
-    out_tree.Branch("event_status",  buf_status, "event_status/I")
-else:
-    out_file = None
-    out_tree = None
+out_tree.Branch("run_number",    buf_run,    "run_number/I")
+out_tree.Branch("event_id",      buf_event,  "event_id/I")
+out_tree.Branch("event_status",  buf_status, "event_status/I")
 
 # Nested branch structure per method:
 #   n_vtx_groups                          (int)
@@ -163,20 +153,17 @@ _vvec_int   = 'vector<vector<int>>'
 _vvec_dbl   = 'vector<vector<double>>'
 _vvvec_dbl  = 'vector<vector<vector<double>>>'
 
-def _make_nested_branches(prefix, tree=None):
+def _make_nested_branches(prefix, tree):
     b = {}
     b['n_vtx_groups'] = c_array('i', [0])
-    if tree is not None:
-        tree.Branch(f"{prefix}_n_vtx_groups", b['n_vtx_groups'], f"{prefix}_n_vtx_groups/I")
+    tree.Branch(f"{prefix}_n_vtx_groups", b['n_vtx_groups'], f"{prefix}_n_vtx_groups/I")
     # Per-group: multiplicity  [n_groups]
     b['vtx_mult'] = root.std.vector('int')()
-    if tree is not None:
-        tree.Branch(f"{prefix}_vtx_mult", b['vtx_mult'])
+    tree.Branch(f"{prefix}_vtx_mult", b['vtx_mult'])
     # Per-track int fields  [group][track]
     for name in ['track_id', 'closest_beam_id']:
         b[name] = root.std.vector(root.std.vector('int'))()
-        if tree is not None:
-            tree.Branch(f"{prefix}_{name}", b[name])
+        tree.Branch(f"{prefix}_{name}", b[name])
     # Per-track double fields  [group][track]
     for name in [
         'theta', 'phi', 'range_mm', 'energy_keV', 'r2d', 'delta_z',
@@ -188,13 +175,11 @@ def _make_nested_branches(prefix, tree=None):
         'closest_beam_dist',
     ]:
         b[name] = root.std.vector(root.std.vector('double'))()
-        if tree is not None:
-            tree.Branch(f"{prefix}_{name}", b[name])
+        tree.Branch(f"{prefix}_{name}", b[name])
     # Charge profiles  [group][track][bin]
     for name in ['cp_x', 'cp_y', 'cp_xs', 'cp_ys']:
         b[name] = root.std.vector(root.std.vector(root.std.vector('double')))()
-        if tree is not None:
-            tree.Branch(f"{prefix}_{name}", b[name])
+        tree.Branch(f"{prefix}_{name}", b[name])
     return b
 
 ransac_br = _make_nested_branches("ransac", out_tree)
@@ -204,12 +189,10 @@ reg_br    = _make_nested_branches("reg", out_tree)
 for name in ['theta2', 'phi2', 'range_comb_mm', 'energy_comb_keV', 'r2d_comb', 'delta_z_comb',
              'vertex2_x', 'vertex2_y', 'vertex2_z']:
     reg_br[name] = root.std.vector(root.std.vector('double'))()
-    if save_root:
-        out_tree.Branch(f"reg_{name}", reg_br[name])
+    out_tree.Branch(f"reg_{name}", reg_br[name])
 for name in ['cp_comb_x', 'cp_comb_y', 'cp_comb_xs', 'cp_comb_ys']:
     reg_br[name] = root.std.vector(root.std.vector(root.std.vector('double')))()
-    if save_root:
-        out_tree.Branch(f"reg_{name}", reg_br[name])
+    out_tree.Branch(f"reg_{name}", reg_br[name])
 
 # # good_events = [2, 19, 21, 33, 34, 37, 44, 46, 48, 49, 51, 57, 59, 60, 66, 68, 70, 75, 78, 79, 81, 84, 88, 90, 91, 92,
 #                 95, 101, 108, 112, 114, 122]
@@ -249,92 +232,24 @@ for entries in myTree:
                         data_points.append([posX, posY, posZ, Qvox])                                                   
         data_points_3d = np.array(data_points)
         
-        # Call HDBSCAN/DBSCAN clustering
+        # Call HDBSCAN clustering
         if len(data_points_3d) > 0:
           try:
             _t0 = time.time()
             _t_event = _t0
-
-            # ── Optional: run both clusterers and compare cluster counts ─────────
-            if compare_clustering:
-                _hdb_labels, _ = dbcluster(data_points_3d, SCAN.MIN_CLUSTER_SIZE.value, SCAN.MIN_SAMPLES.value, use_hdbscan=True)
-                _db_labels,  _ = dbcluster(data_points_3d, SCAN.MIN_CLUSTER_SIZE.value, SCAN.MIN_SAMPLES.value, use_hdbscan=False)
-                _n_hdb = len(set(_hdb_labels[_hdb_labels != -1]))
-                _n_db  = len(set(_db_labels[_db_labels  != -1]))
-                if _n_hdb >= compare_min_hdb_clusters and _n_db <= _n_hdb * compare_max_db_ratio:
-                    _evt_id = int(entries.data.event)
-                    _cluster_comparison_log.append(
-                        f"Event {_evt_id:6d}  |  HDBSCAN={_n_hdb}  DBSCAN={_n_db}"
-                    )
-                    print(f"  [compare] Event {_evt_id}: HDBSCAN={_n_hdb} clusters, DBSCAN={_n_db} clusters  <-- DBSCAN much fewer")
-
-                    # Save side-by-side canvas: top row=HDBSCAN, bottom row=DBSCAN (XY, YZ, XZ)
-                    _dp_hdb = np.column_stack((data_points_3d, _hdb_labels))  # label at col 4
-                    _dp_db  = np.column_stack((data_points_3d, _db_labels))
-                    _cmp_canvas = root.TCanvas(
-                        f"cmp_{_evt_id}",
-                        f"Event {_evt_id}: HDBSCAN({_n_hdb}) vs DBSCAN({_n_db})",
-                        1800, 800,
-                    )
-                    _cmp_canvas.Divide(3, 2)
-                    _cmp_canvas.cd(1).SetTitle("HDBSCAN XY")
-                    _cmp_canvas.cd(2).SetTitle("HDBSCAN YZ")
-                    _cmp_canvas.cd(3).SetTitle("HDBSCAN XZ")
-                    _cmp_canvas.cd(4).SetTitle("DBSCAN XY")
-                    _cmp_canvas.cd(5).SetTitle("DBSCAN YZ")
-                    _cmp_canvas.cd(6).SetTitle("DBSCAN XZ")
-                    _gr_hdb = plot_3d_projections(_dp_hdb, DataArray.DBSCAN, _cmp_canvas, [1, 2, 3])
-                    _gr_db  = plot_3d_projections(_dp_db,  DataArray.DBSCAN, _cmp_canvas, [4, 5, 6])
-
-                    # Draw noise points (label=-1) in grey on top of each pad
-                    _noise_grey = root.kGray + 1
-                    _noise_graphs = []
-                    for _pad_idx, (_dp, _lbl_arr) in enumerate(
-                        [(_dp_hdb, _hdb_labels), (_dp_hdb, _hdb_labels), (_dp_hdb, _hdb_labels),
-                         (_dp_db,  _db_labels),  (_dp_db,  _db_labels),  (_dp_db,  _db_labels)]
-                    ):
-                        _noise_mask = _lbl_arr == -1
-                        if not np.any(_noise_mask):
-                            continue
-                        _noise_pts = data_points_3d[_noise_mask]
-                        _cmp_canvas.cd(_pad_idx + 1)
-                        _axes = [
-                            (DataArray.X.value, DataArray.Y.value),
-                            (DataArray.Y.value, DataArray.Z.value),
-                            (DataArray.X.value, DataArray.Z.value),
-                        ][_pad_idx % 3]
-                        _ng = root.TGraph(len(_noise_pts))
-                        for _ni, _np in enumerate(_noise_pts):
-                            _ng.SetPoint(_ni, _np[_axes[0]], _np[_axes[1]])
-                        _ng.SetMarkerColor(_noise_grey)
-                        _ng.SetMarkerStyle(6)
-                        _ng.SetMarkerSize(0.4)
-                        _ng.Draw("P same")
-                        _noise_graphs.append(_ng)
-
-                    _cmp_canvas.Update()
-                    _cmp_dir = os.path.join(FileNames.IMAGES_DIR.value, "cluster_compare")
-                    os.makedirs(_cmp_dir, exist_ok=True)
-                    _cmp_canvas.SaveAs(f"{_cmp_dir}/event_{_evt_id}_hdb{_n_hdb}_db{_n_db}.png")
-
-                # Skip all further processing for this event — comparison mode only
-                continue
-            # ─────────────────────────────────────────────────────────────────────
-
             dbscan_labels, valid_cluster = dbcluster(
                 data_points_3d,
                 SCAN.MIN_CLUSTER_SIZE.value,
-                SCAN.MIN_SAMPLES.value,
-                use_hdbscan=hdbscan
+                SCAN.MIN_SAMPLES.value
             )
             
-            # Add HDBSCAN/DBSCAN labels to the data array
+            # Add HDBSCAN labels to the data array
             data_points_3d = np.column_stack((data_points_3d, dbscan_labels))
             
-            # Call hierarchical clustering with GMM, reusing the clustering labels already computed above
+            # Call hierarchical clustering with GMM, reusing the DBSCAN labels already computed above
             gmm_labels, n_comp, responsibilities, _, elapsed_dbscan, elapsed_gmm = hierarchical_clustering_with_responsibilities(data_points_3d[:, :4], max_components=10, dbscan_labels=dbscan_labels)
             _t_dbscan_done = time.time()
-            print(f"  [timing] {'HDBSCAN' if hdbscan else 'DBSCAN'}:       {elapsed_dbscan:.2f}s")
+            print(f"  [timing] DBSCAN:       {elapsed_dbscan:.2f}s")
             print(f"  [timing] GMM:          {sum(elapsed_gmm):.2f}s")
 
             # Re-split any GMM component that straddles the beam zone
@@ -376,10 +291,29 @@ for entries in myTree:
             _t1 = time.time()
             _gmm_arr = gmm_labels  # shape (n_points,), values are global GMM labels
             gmm_track_type = np.zeros(len(data_points_3d), dtype=int)  # 0=beam, 1=scatter
+            _beam_axis = np.array([1.0, 0.0, 0.0])  # beam runs along X
+            _BEAM_DIR_ANGLE_MIN = 20.0  # degrees — components with theta < this are beam-like
             for _lbl in np.unique(_gmm_arr[_gmm_arr != -1]):
                 _m = _gmm_arr == _lbl
                 _cy = np.mean(data_points_3d[_m, DataArray.Y.value])
                 if _cy < VolumeBoundaries.BEAM_ZONE_MIN.value or _cy > VolumeBoundaries.BEAM_ZONE_MAX.value:
+                    # Secondary check: if PCA direction is nearly along beam axis, keep as beam
+                    _pts_lbl = data_points_3d[_m][:, :3]
+                    if len(_pts_lbl) >= 2:
+                        try:
+                            from sklearn.decomposition import PCA as _PCA_cls
+                            _pca_cls = _PCA_cls(n_components=1)
+                            _pca_cls.fit(_pts_lbl)
+                            _d = _pca_cls.components_[0]
+                            _cos = abs(float(np.dot(_d, _beam_axis)))
+                            _cos = min(1.0, _cos)
+                            _theta_vs_beam = np.degrees(np.arccos(_cos))
+                            if _theta_vs_beam < _BEAM_DIR_ANGLE_MIN:
+                                print(f"  [cls-fix] GMM label {_lbl}: Y-centroid={_cy:.1f} outside beam zone "
+                                      f"but dir angle to beam={_theta_vs_beam:.1f}° → reclassified as beam")
+                                continue  # leave gmm_track_type[_m] = 0 (beam)
+                        except Exception:
+                            pass
                     gmm_track_type[_m] = 1
 
             # Separate p-value merging: beam GMM components with beam only,
@@ -774,8 +708,7 @@ for entries in myTree:
                         if hasattr(v, 'clear'):
                             v.clear()
                     _br['n_vtx_groups'][0] = 0
-                if save_root:
-                    out_tree.Fill()
+                out_tree.Fill()
 
             if batch_mode:
                 if save_canvas:
@@ -1462,19 +1395,6 @@ for entries in myTree:
                     c1.SaveAs(f"{_images_dir}/event_{event_id}_clustering.png")
                     # c2.SaveAs(f"{_images_dir}/event_{event_id}_beam_centroids.png")
 
-                    # ── Theta-lab summary ──────────────────────────────────────────────
-                    print(f"  [theta-lab] Event {event_id}  GMM scatter tracks: {len(GMM_REG)}")
-                    for _ep in GMM_REG:
-                        _th = f"{_ep.theta_deg:.2f}" if _ep.theta_deg is not None else "None"
-                        _rng = f"{_ep.range_scat_mm:.1f}" if _ep.range_scat_mm is not None else "None"
-                        print(f"    GMM  trk={_ep.track_id}  theta_lab={_th} deg  range={_rng} mm")
-                    print(f"  [theta-lab] Event {event_id}  RANSAC scatter tracks: {len(RANSAC)}")
-                    for _ep in RANSAC:
-                        _th = f"{_ep.theta_deg:.2f}" if _ep.theta_deg is not None else "None"
-                        _rng = f"{_ep.range_scat_mm:.1f}" if _ep.range_scat_mm is not None else "None"
-                        print(f"    RANSAC trk={_ep.track_id}  theta_lab={_th} deg  range={_rng} mm")
-                    # ──────────────────────────────────────────────────────────────────
-
                 # ── Vertex multiplicity: group nearby vertices, draw zoomed canvases ──────
                 vertex_group_radius = Optimize.VERTEX_GROUP_RADIUS_MM.value
                 vertex_zoom_margin  = Optimize.VERTEX_ZOOM_MARGIN_MM.value
@@ -2027,8 +1947,7 @@ for entries in myTree:
                 buf_status[0] = 0
                 _fill_nested(ransac_br, vtx_groups_by_method.get("RANSAC", []))
                 _fill_nested(reg_br, vtx_groups_by_method.get("REG", []), is_reg=True)
-                if save_root:
-                    out_tree.Fill()
+                out_tree.Fill()
                 print(f"Event {event_id} done in {time.time() - _event_start_time:.2f}s")
           except Exception as _evt_exc:
             import traceback
@@ -2041,23 +1960,11 @@ for entries in myTree:
                     if hasattr(v, 'clear'):
                         v.clear()
                 _br['n_vtx_groups'][0] = 0
-            if save_root:
-                out_tree.Fill()
+            out_tree.Fill()
             print(f"Event {int(entries.data.event)} failed in {time.time() - _event_start_time:.2f}s")
             continue
 
-if save_root:
-    out_file.cd()
-    out_tree.Write()
-    out_file.Close()
-    print(f"Output written to {os.path.join(FileNames.OUTPUT_DIR.value, f'output_run_{run_number}_{start_event}_{end_event}.root')}")
-
-if compare_clustering and _cluster_comparison_log:
-    print("\n" + "=" * 60)
-    print("CLUSTER COMPARISON SUMMARY  (DBSCAN << HDBSCAN)")
-    print(f"  Criteria: HDBSCAN >= {compare_min_hdb_clusters} clusters AND DBSCAN <= {int(compare_max_db_ratio*100)}% of HDBSCAN")
-    print("=" * 60)
-    for _line in _cluster_comparison_log:
-        print(f"  {_line}")
-    print(f"\nTotal flagged events: {len(_cluster_comparison_log)}")
-    print("=" * 60)
+out_file.cd()
+out_tree.Write()
+out_file.Close()
+print(f"Output written to {os.path.join(FileNames.OUTPUT_DIR.value, f'output_run_{run_number}_{start_event}_{end_event}.root')}")

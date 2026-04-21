@@ -1,16 +1,19 @@
 #!/usr/bin/env python3
 """Check all ROOT files in seed_fixed/ for TFile::Recover warnings.
 Captures stderr at the file-descriptor level so ROOT's C-level messages
-are intercepted.  Prints every file that triggered a recovery."""
+are intercepted.  Prints every file that triggered a recovery and moves
+those files to seed_fixed_failed/."""
 
 import os
+import shutil
 import sys
 import threading
 import ROOT
 
 ROOT.gROOT.SetBatch(True)
 
-SEED_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "seed_fixed")
+SEED_DIR   = os.path.join(os.path.dirname(os.path.abspath(__file__)), "seed_fixed")
+FAILED_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "seed_fixed_failed")
 
 
 def open_and_check(fpath):
@@ -57,6 +60,7 @@ def open_and_check(fpath):
 
 
 def main():
+    os.makedirs(FAILED_DIR, exist_ok=True)
     all_files = sorted(f for f in os.listdir(SEED_DIR) if f.endswith(".root"))
     total = len(all_files)
     print(f"Checking {total} ROOT files in seed_fixed/ ...", flush=True)
@@ -92,6 +96,19 @@ def main():
             print(f"\n  {fname}")
             for line in msg.splitlines()[:4]:
                 print(f"    {line}")
+
+    # Move bad files to seed_fixed_failed/
+    bad_files = zombie_files + [fname for fname, _ in recovered_files]
+    if bad_files:
+        print(f"\nMoving {len(bad_files)} bad file(s) to seed_fixed_failed/ ...")
+        for fname in bad_files:
+            src = os.path.join(SEED_DIR, fname)
+            dst = os.path.join(FAILED_DIR, fname)
+            shutil.move(src, dst)
+            print(f"  moved: {fname}")
+        print("Done moving.")
+    else:
+        print("\nNo bad files to move.")
 
     print("\nDone.")
 

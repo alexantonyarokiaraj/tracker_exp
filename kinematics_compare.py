@@ -212,9 +212,11 @@ def _lab_to_ex(theta_lab_deg, T_alpha_MeV):
     theta_cm = 180.0 - theta_cm   # convert to user convention (0° = beam direction)
     return theta_cm, Ex
 
-ransac_excitation   = ([], [])   # (theta_CM_deg, E*_MeV)
-reg_excitation      = ([], [])
-reg_comb_excitation = ([], [])
+ransac_excitation      = ([], [])   # (theta_CM_deg, E*_MeV)
+ransac_excitation_evts = []          # parallel (run, event_id) for each entry
+reg_excitation         = ([], [])
+reg_comb_excitation    = ([], [])
+reg_comb_excitation_evts = []        # parallel (run, event_id) for each entry
 
 # Filter diagnostic containers — spatial coords of all tracks that pass all
 # filters AND the cutg gate. Used for the filter diagnostics canvas.
@@ -352,6 +354,8 @@ for i in range(n_entries):
                     if _tcm_r is not None:
                         ransac_excitation[0].append(_tcm_r)
                         ransac_excitation[1].append(_ex_r)
+                        ransac_excitation_evts.append(
+                            (int(chain.run_number) if _has_run else -1, event_id))
                         _ransac_ex_all_passing.append({'theta': theta, 'rng': rng,
                                                        'tcm': _tcm_r, 'ex': _ex_r})
                         if (_EX_BIN_TCM_LO <= _tcm_r <= _EX_BIN_TCM_HI and
@@ -554,6 +558,8 @@ for i in range(n_entries):
                     if _tcm_c is not None:
                         reg_comb_excitation[0].append(_tcm_c)
                         reg_comb_excitation[1].append(_ex_c)
+                        reg_comb_excitation_evts.append(
+                            (int(chain.run_number) if _has_run else -1, event_id))
                         _gmm_ex_all_passing.append({'theta': theta2, 'rng': rng_c,
                                                     'tcm': _tcm_c, 'ex': _ex_c})
                         if (_EX_BIN_TCM_LO <= _tcm_c <= _EX_BIN_TCM_HI and
@@ -1464,6 +1470,269 @@ print(f"excitation-energy points — RANSAC: {len(ransac_excitation[0])},"
       f" GMM: {len(reg_excitation[0])}, GMM+resp: {len(reg_comb_excitation[0])}")
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Performance-gain canvas: GMM+resp vs RANSAC
+# Pad 1: relative gain (GMM-RANSAC)/RANSAC per 0.3°-θ_CM bin, E* ∈ [-1, 1] MeV
+# Pad 2: same,                                                  E* ∈ [9, 11]  MeV
+# Pad 3: overlay E* histograms [16.5, 18.5] MeV, θ_CM ∈ [1°, 5°]
+# ─────────────────────────────────────────────────────────────────────────────
+_pg_tcm_lo  = 1.0
+_pg_tcm_hi  = 5.0
+_pg_bin_w   = 0.3                              # deg per bin
+_pg_n_bins  = int(round((_pg_tcm_hi - _pg_tcm_lo) / _pg_bin_w))   # 13
+_pg_tcm_hi_adj = _pg_tcm_lo + _pg_n_bins * _pg_bin_w              # 4.9
+
+def _pg_bin_counts(ex_data, ex_lo, ex_hi):
+    """Count entries per θ_CM bin (0.3°) for a given E* slice."""
+    counts = [0] * _pg_n_bins
+    for _tc, _ev in zip(ex_data[0], ex_data[1]):
+        if ex_lo <= _ev < ex_hi and _pg_tcm_lo <= _tc < _pg_tcm_hi_adj:
+            _bi = int((_tc - _pg_tcm_lo) / _pg_bin_w)
+            if 0 <= _bi < _pg_n_bins:
+                counts[_bi] += 1
+    return counts
+
+_pg_slices = [
+    ("E* #in [#minus1, 1] MeV", -1.0,  1.0),
+    ("E* #in [9, 11] MeV",       9.0, 11.0),
+]
+
+c_pg = root.TCanvas("c_pg", "GMM+resp vs RANSAC performance gain", 4800, 700)
+c_pg.Divide(6, 1)
+_pg_keep = []
+
+for _pi, (_pg_title, _pg_elo, _pg_ehi) in enumerate(_pg_slices, start=1):
+    c_pg.cd(_pi)
+    root.gPad.SetGridx(1)
+    root.gPad.SetGridy(1)
+
+    _cnts_r = _pg_bin_counts(ransac_excitation,   _pg_elo, _pg_ehi)
+    _cnts_g = _pg_bin_counts(reg_comb_excitation, _pg_elo, _pg_ehi)
+
+    _h_gain = root.TH1F(
+        f"h_gain_{_pi}",
+        f"{_pg_title};#theta_{{CM}} (deg);(GMM+resp #minus RANSAC) / RANSAC",
+        _pg_n_bins, _pg_tcm_lo, _pg_tcm_hi_adj,
+    )
+    _h_gain.SetDirectory(0)
+    _ylo_gain, _yhi_gain = float("inf"), float("-inf")
+    for _bi in range(_pg_n_bins):
+        _r = _cnts_r[_bi]
+        _g = _cnts_g[_bi]
+        if _r > 0:
+            _val = (_g - _r) / float(_r)
+            _h_gain.SetBinContent(_bi + 1, _val)
+            # Poisson error on ratio: sqrt(g/r²  + g²/r³) ≈ sqrt((g+r)/r²) for large counts
+            _err = math.sqrt(_g / _r**2 + _g**2 / _r**3) if _r > 0 and _g > 0 else (1.0 / math.sqrt(_r) if _r > 0 else 0)
+            _h_gain.SetBinError(_bi + 1, _err)
+            _ylo_gain = min(_ylo_gain, _val - _err)
+            _yhi_gain = max(_yhi_gain, _val + _err)
+    if _ylo_gain == float("inf"):
+        _ylo_gain, _yhi_gain = -1.0, 2.0
+    _margin = max(0.5, (_yhi_gain - _ylo_gain) * 0.2)
+    _h_gain.GetYaxis().SetRangeUser(_ylo_gain - _margin, _yhi_gain + _margin)
+    _h_gain.SetLineColor(root.kBlue + 1)
+    _h_gain.SetMarkerColor(root.kBlue + 1)
+    _h_gain.SetMarkerStyle(20)
+    _h_gain.SetMarkerSize(0.8)
+    _h_gain.Draw("E1")
+    _pg_line0 = root.TLine(_pg_tcm_lo, 0.0, _pg_tcm_hi_adj, 0.0)
+    _pg_line0.SetLineColor(root.kRed)
+    _pg_line0.SetLineStyle(2)
+    _pg_line0.SetLineWidth(2)
+    _pg_line0.Draw()
+    _pg_keep += [_h_gain, _pg_line0]
+    # Print counts per θ_CM bin
+    print(f"\nPerformance gain counts: {_pg_title}")
+    print(f"  {'theta_CM_center':>16}  {'RANSAC':>8}  {'GMM+resp':>10}  {'(G-R)/R':>8}")
+    for _bi in range(_pg_n_bins):
+        _tc_lo_b = _pg_tcm_lo + _bi * _pg_bin_w
+        _tc_hi_b = _tc_lo_b + _pg_bin_w
+        _tc_ctr  = _tc_lo_b + 0.5 * _pg_bin_w
+        _rc, _gc = _cnts_r[_bi], _cnts_g[_bi]
+        _gs = f"{(_gc - _rc) / _rc:.3f}" if _rc > 0 else "N/A"
+        print(f"  {_tc_ctr:>16.2f}  {_rc:>8d}  {_gc:>10d}  {_gs:>8}")
+        # Print per-event breakdown when counts differ, showing both sides so net == G - R
+        if _gc != _rc:
+            _r_cnt_evt = {}
+            for _idx, (_tc, _ev) in enumerate(zip(ransac_excitation[0], ransac_excitation[1])):
+                if _pg_elo <= _ev < _pg_ehi and _tc_lo_b <= _tc < _tc_hi_b:
+                    _key = ransac_excitation_evts[_idx]
+                    _r_cnt_evt[_key] = _r_cnt_evt.get(_key, 0) + 1
+            _g_cnt_evt = {}
+            for _idx, (_tc, _ev) in enumerate(zip(reg_comb_excitation[0], reg_comb_excitation[1])):
+                if _pg_elo <= _ev < _pg_ehi and _tc_lo_b <= _tc < _tc_hi_b:
+                    _key = reg_comb_excitation_evts[_idx]
+                    _g_cnt_evt[_key] = _g_cnt_evt.get(_key, 0) + 1
+            _all_keys = set(_r_cnt_evt) | set(_g_cnt_evt)
+            _gmm_surplus  = sorted(
+                (_re, _ee, _g_cnt_evt.get((_re,_ee),0) - _r_cnt_evt.get((_re,_ee),0))
+                for (_re, _ee) in _all_keys
+                if _g_cnt_evt.get((_re,_ee),0) > _r_cnt_evt.get((_re,_ee),0)
+            )
+            _rans_surplus = sorted(
+                (_re, _ee, _r_cnt_evt.get((_re,_ee),0) - _g_cnt_evt.get((_re,_ee),0))
+                for (_re, _ee) in _all_keys
+                if _r_cnt_evt.get((_re,_ee),0) > _g_cnt_evt.get((_re,_ee),0)
+            )
+            _tot_g = sum(_d for _,_,_d in _gmm_surplus)
+            _tot_r = sum(_d for _,_,_d in _rans_surplus)
+            print(f"    net = GMM_surplus({_tot_g}) - RANSAC_surplus({_tot_r}) = {_tot_g - _tot_r}  (== G-R = {_gc-_rc})")
+            if _gmm_surplus:
+                print(f"    GMM-surplus events (run, event, +delta):")
+                for _re, _ee, _d in _gmm_surplus:
+                    print(f"      run={_re}  event={_ee}  +{_d}")
+            if _rans_surplus:
+                print(f"    RANSAC-surplus events (run, event, +delta)  [cancel above]:")
+                for _re, _ee, _d in _rans_surplus:
+                    print(f"      run={_re}  event={_ee}  +{_d}")
+
+# Pad 3: overlay E* histogram, E* ∈ [16.5, 18.5] MeV, θ_CM ∈ [1°, 5°]
+c_pg.cd(3)
+root.gPad.SetGridx(1)
+root.gPad.SetGridy(1)
+_pg_elo3, _pg_ehi3 = 16.5, 18.5
+_pg_nb3 = 16   # 16 bins × 0.125 MeV/bin
+_h_ov_r = root.TH1F(
+    "h_ov_ransac",
+    f"E* #in [{_pg_elo3}, {_pg_ehi3}] MeV, #theta_{{CM}} #in [1, 5]#circ;"
+    "E* (MeV);Counts",
+    _pg_nb3, _pg_elo3, _pg_ehi3,
+)
+_h_ov_g = root.TH1F("h_ov_gmm", "", _pg_nb3, _pg_elo3, _pg_ehi3)
+_h_ov_r.SetDirectory(0)
+_h_ov_g.SetDirectory(0)
+for _tc, _ev in zip(ransac_excitation[0], ransac_excitation[1]):
+    if _pg_tcm_lo <= _tc <= _pg_tcm_hi and _pg_elo3 <= _ev <= _pg_ehi3:
+        _h_ov_r.Fill(_ev)
+for _tc, _ev in zip(reg_comb_excitation[0], reg_comb_excitation[1]):
+    if _pg_tcm_lo <= _tc <= _pg_tcm_hi and _pg_elo3 <= _ev <= _pg_ehi3:
+        _h_ov_g.Fill(_ev)
+_pg_ymax3 = max(_h_ov_r.GetMaximum(), _h_ov_g.GetMaximum()) * 1.3
+if _pg_ymax3 <= 0:
+    _pg_ymax3 = 10.0
+_h_ov_r.GetYaxis().SetRangeUser(0, _pg_ymax3)
+_h_ov_r.SetLineColor(root.kRed + 1)
+_h_ov_r.SetLineWidth(2)
+_h_ov_g.SetLineColor(root.kBlue + 1)
+_h_ov_g.SetLineWidth(2)
+_h_ov_r.Draw("HIST")
+_h_ov_g.Draw("HIST SAME")
+_pg_leg3 = root.TLegend(0.62, 0.72, 0.92, 0.88)
+_pg_leg3.SetBorderSize(0)
+_pg_leg3.AddEntry(_h_ov_r, "RANSAC",   "l")
+_pg_leg3.AddEntry(_h_ov_g, "GMM+resp", "l")
+_pg_leg3.Draw()
+_pg_keep += [_h_ov_r, _h_ov_g, _pg_leg3]
+
+# Pad 4: θ_CM histogram, counts summed over E* ∈ [16.5, 18.5] MeV
+c_pg.cd(4)
+root.gPad.SetGridx(1)
+root.gPad.SetGridy(1)
+_pg_nb4  = 13   # 13 bins × 0.3°/bin matching pads 1&2
+_h_tcm_r = root.TH1F(
+    "h_tcm_ransac",
+    "E* #in [16.5, 18.5] MeV;#theta_{CM} (deg);Counts",
+    _pg_nb4, _pg_tcm_lo, _pg_tcm_lo + _pg_nb4 * _pg_bin_w,
+)
+_h_tcm_g = root.TH1F(
+    "h_tcm_gmm", "",
+    _pg_nb4, _pg_tcm_lo, _pg_tcm_lo + _pg_nb4 * _pg_bin_w,
+)
+_h_tcm_r.SetDirectory(0)
+_h_tcm_g.SetDirectory(0)
+for _tc, _ev in zip(ransac_excitation[0], ransac_excitation[1]):
+    if 16.5 <= _ev <= 18.5:
+        _h_tcm_r.Fill(_tc)
+for _tc, _ev in zip(reg_comb_excitation[0], reg_comb_excitation[1]):
+    if 16.5 <= _ev <= 18.5:
+        _h_tcm_g.Fill(_tc)
+_pg_ymax4 = max(_h_tcm_r.GetMaximum(), _h_tcm_g.GetMaximum()) * 1.3
+if _pg_ymax4 <= 0:
+    _pg_ymax4 = 10.0
+_h_tcm_r.GetYaxis().SetRangeUser(0, _pg_ymax4)
+_h_tcm_r.SetLineColor(root.kRed + 1)
+_h_tcm_r.SetLineWidth(2)
+_h_tcm_g.SetLineColor(root.kBlue + 1)
+_h_tcm_g.SetLineWidth(2)
+_h_tcm_r.Draw("HIST")
+_h_tcm_g.Draw("HIST SAME")
+_pg_leg4 = root.TLegend(0.62, 0.72, 0.92, 0.88)
+_pg_leg4.SetBorderSize(0)
+_pg_leg4.AddEntry(_h_tcm_r, "RANSAC",   "l")
+_pg_leg4.AddEntry(_h_tcm_g, "GMM+resp", "l")
+_pg_leg4.Draw()
+_pg_keep += [_h_tcm_r, _h_tcm_g, _pg_leg4]
+
+# Pads 5 & 6: θ_CM histograms (RANSAC vs GMM+resp) gated on E* ∈ [-1,1] and [9,11] MeV
+for _oi, (_ot, _oelo, _oehi) in enumerate([
+    ("E* #in [#minus1, 1] MeV", -1.0,  1.0),
+    ("E* #in [9, 11] MeV",       9.0, 11.0),
+], start=5):
+    c_pg.cd(_oi)
+    root.gPad.SetGridx(1)
+    root.gPad.SetGridy(1)
+    _h_eov_r = root.TH1F(
+        f"h_eov_ransac_{_oi}",
+        f"{_ot};#theta_{{CM}} (deg);Counts",
+        _pg_n_bins, _pg_tcm_lo, _pg_tcm_hi_adj,
+    )
+    _h_eov_g = root.TH1F(
+        f"h_eov_gmm_{_oi}", "",
+        _pg_n_bins, _pg_tcm_lo, _pg_tcm_hi_adj,
+    )
+    _h_eov_r.SetDirectory(0)
+    _h_eov_g.SetDirectory(0)
+    for _tc, _ev in zip(ransac_excitation[0], ransac_excitation[1]):
+        if _oelo <= _ev < _oehi and _pg_tcm_lo <= _tc < _pg_tcm_hi_adj:
+            _h_eov_r.Fill(_tc)
+    for _tc, _ev in zip(reg_comb_excitation[0], reg_comb_excitation[1]):
+        if _oelo <= _ev < _oehi and _pg_tcm_lo <= _tc < _pg_tcm_hi_adj:
+            _h_eov_g.Fill(_tc)
+    _pg_ymax_ov = max(_h_eov_r.GetMaximum(), _h_eov_g.GetMaximum()) * 1.3
+    if _pg_ymax_ov <= 0:
+        _pg_ymax_ov = 10.0
+    _h_eov_r.GetYaxis().SetRangeUser(0, _pg_ymax_ov)
+    _h_eov_r.SetLineColor(root.kRed + 1)
+    _h_eov_r.SetLineWidth(2)
+    _h_eov_g.SetLineColor(root.kBlue + 1)
+    _h_eov_g.SetLineWidth(2)
+    _h_eov_r.Draw("HIST")
+    _h_eov_g.Draw("HIST SAME")
+    _pg_leg_ov = root.TLegend(0.62, 0.72, 0.92, 0.88)
+    _pg_leg_ov.SetBorderSize(0)
+    _pg_leg_ov.AddEntry(_h_eov_r, "RANSAC",   "l")
+    _pg_leg_ov.AddEntry(_h_eov_g, "GMM+resp", "l")
+    _pg_leg_ov.Draw()
+    _pg_keep += [_h_eov_r, _h_eov_g, _pg_leg_ov]
+
+c_pg.Update()
+if not _save:
+    c_pg.WaitPrimitive()
+c_pg.SaveAs(os.path.join(images_dir, f"performance_gain{_tag}.png"))
+c_pg.SaveAs(os.path.join(images_dir, f"performance_gain{_tag}.root"))
+
+# Save a separate ROOT file with only the two gain-ratio histograms (pads 1 & 2)
+_c_gain2 = root.TCanvas("c_gain2", "GMM+resp vs RANSAC gain ratio", 1600, 700)
+_c_gain2.Divide(2, 1)
+for _pi2, _hg in enumerate(
+    [_o for _o in _pg_keep if isinstance(_o, root.TH1F) and _o.GetName().startswith("h_gain_")],
+    start=1,
+):
+    _c_gain2.cd(_pi2)
+    root.gPad.SetGridx(1)
+    root.gPad.SetGridy(1)
+    _hg.Draw("E1")
+    # redraw the zero line
+    _zl = root.TLine(_pg_tcm_lo, 0.0, _pg_tcm_hi_adj, 0.0)
+    _zl.SetLineColor(root.kRed); _zl.SetLineStyle(2); _zl.SetLineWidth(2)
+    _zl.Draw()
+    _pg_keep.append(_zl)
+_c_gain2.Update()
+_c_gain2.SaveAs(os.path.join(images_dir, f"performance_gain_ratio_only{_tag}.root"))
+root.gROOT.GetListOfCanvases().Remove(_c_gain2)
+del _c_gain2
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Filter diagnostics — two 3×3 canvases (RANSAC and GMM+resp separately)
 # Pad 1: Vertex X vs Y        Pad 2: Vertex Z vs End Z   Pad 3: End X vs Y
 # Pad 4: Start X vs Y         Pad 5: Phi (1D)             Pad 6: End Y (1D)
@@ -1664,6 +1933,65 @@ _c2.Write()   # saves the full 2-pad canvas — open in ROOT browser to see both
 _fout2.Close()
 print(f"[2-pad canvas saved] {_c2_png}")
 print(f"[2-pad ROOT saved]   {_c2_root}")
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 4-pad combined canvas: (a,b) E* vs θ_CM 2D histos  +  (c,d) gain ratios
+# ─────────────────────────────────────────────────────────────────────────────
+_c4 = root.TCanvas("c_combined_4pad", "E* vs CM + Gain Ratio (4-pad)", 2400, 1600)
+_c4.Divide(2, 2)
+_c4_keep = []
+
+# Pads (a) and (b): E* vs θ_CM — RANSAC (top-left) and GMM+resp (top-right)
+for _p4, (_l4, _d4) in enumerate([
+    ("RANSAC",   ransac_excitation),
+    ("GMM+resp", reg_comb_excitation),
+], start=1):
+    _c4.cd(_p4)
+    root.gPad.SetGridx(1)
+    root.gPad.SetGridy(1)
+    _h4 = root.TH2F(
+        f"h_c4_ex_{_p4}",
+        f"{_l4}: E* vs #theta_{{CM}};#theta_{{CM}} (deg);E* (MeV)",
+        20, 0, 6, 48, _EX_RANGE_LO, _EX_RANGE_HI,
+    )
+    _h4.SetDirectory(0)
+    for _tc4, _ev4 in zip(_d4[0], _d4[1]):
+        if _EX_RANGE_LO < _ev4 < _EX_RANGE_HI:
+            _h4.Fill(_tc4, _ev4)
+    _h4.Draw("COLZ")
+    root.gPad.SetLogz(1)
+    _c4_keep.append(_h4)
+    for _ev, _hl in _hlines:
+        _hl.Draw("SAME")
+    _draw_ex_legend()
+
+# Pads (c) and (d): gain ratio histograms from _pg_keep
+_gain_hists = [_o for _o in _pg_keep if isinstance(_o, root.TH1F) and _o.GetName().startswith("h_gain_")]
+for _p4g, _hg4 in enumerate(_gain_hists, start=3):
+    _c4.cd(_p4g)
+    root.gPad.SetGridx(1)
+    root.gPad.SetGridy(1)
+    _hg4.SetStats(0)
+    _hg4.Draw("E1")
+    _zl4 = root.TLine(_pg_tcm_lo, 0.0, _pg_tcm_hi_adj, 0.0)
+    _zl4.SetLineColor(root.kRed); _zl4.SetLineStyle(2); _zl4.SetLineWidth(2)
+    _zl4.Draw()
+    _c4_keep.append(_zl4)
+
+_c4.Update()
+_c4_root = os.path.join(images_dir, f"combined_ex_gain{_tag}.root")
+_c4_png  = os.path.join(images_dir, f"combined_ex_gain{_tag}.png")
+_c4.SaveAs(_c4_png)
+_fout4 = root.TFile(_c4_root, "RECREATE")
+_c4.Write()
+_fout4.Close()
+print(f"[4-pad combined saved] {_c4_png}")
+print(f"[4-pad combined ROOT]  {_c4_root}")
+for _hh4 in _c4_keep:
+    if hasattr(_hh4, 'SetDirectory'):
+        _hh4.SetDirectory(0)
+del _c4_keep[:]
+_c4.Close()
 
 for _hh in _c2_keep:
     _hh.SetDirectory(0)

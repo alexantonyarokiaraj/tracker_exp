@@ -11,7 +11,7 @@ squeue -u $USER -o "%.18i %.9P %100j %.8u %.8T %.10M %.9l %.6D %R"
 
 ssh fys-s-tf-clc02 - Department Cluster
 
-python3 kinematics_compare.py run=[53,54,55,56,57,58,59,60,61,62,63,64,65,66,67,68,69,70,71,72,73,74,75,76,78,79,80,81,82,85,86,89] group=True cutg=True save=True
+python3 kinematics_compare.py run=[53,54,55,56,57,58,59,60,61,62,63,64,65,66,67,68,69,70,71,72,73,74,75,76,78,79,80,81,82,85,86,89] group=True cutg=True save=False
 python3 kinematics_compare.py run=[53,54,55,56,57,58,59,60,61,62,63,64,65,66,67,68,69,70,71,72,73,74,75,76,78,79,80,81,82,85,86,89] group=False cutg=True save=True
 python3 kinematics_compare.py run=[53,54,55,56,57,58,59,60,61,62,63,64,65,66,67,68,69,70,71,72,73,74,75,76,78,79,80,81,82,85,86,89] group=True cutg=False save=True
 
@@ -105,3 +105,202 @@ python3 kinematics_compare.py run=[53,54,55,56,57,58,59,60,61,62,63,64,65,66,67,
 
 Runs not processed correctly
 77,83,84,87,88
+
+WIN4 DIAGNOSTIC  —  theta [20,25] deg  x  range [10,30] mm
+  Events where GMM scatter passed this box and RANSAC did not
+================================================================================
+  Total such events: 676
+  run=53  event=11034
+    GMM  : theta=20.9 rng=24.2
+    RANSAC: no candidates in theta window
+  run=53  event=12538
+    GMM  : theta=20.3 rng=23.3
+    RANSAC: no candidates in theta window
+  run=53  event=20023
+    GMM  : theta=24.1 rng=17.4
+    RANSAC: no candidates in theta window
+  run=53  event=24809
+    GMM  : theta=24.9 rng=14.5
+    RANSAC: no candidates in theta window
+  run=53  event=25420
+    GMM  : theta=24.6 rng=16.0
+    RANSAC: no candidates in theta window
+  run=53  event=26288
+    GMM  : theta=23.6 rng=20.1
+    RANSAC: no candidates in theta window
+  run=53  event=33073
+    GMM  : theta=24.3 rng=15.2
+    RANSAC: no candidates in theta window
+  run=53  event=42958
+    GMM  : theta=21.8 rng=22.5
+    RANSAC: no candidates in theta window
+  run=54  event=1496
+    GMM  : theta=22.0 rng=22.6
+    RANSAC: no candidates in theta window
+  run=54  event=23296
+    GMM  : theta=24.2 rng=13.4
+    RANSAC: no candidates in theta window
+  run=54  event=25341
+    GMM  : theta=20.5 rng=21.6
+    RANSAC: no candidates in theta window
+  run=54  event=29231
+    GMM  : theta=20.8 rng=22.6
+    RANSAC: no candidates in theta window
+  run=54  event=29785
+    GMM  : theta=22.6 rng=22.0
+    RANSAC: no candidates in theta window
+  run=54  event=36543
+    GMM  : theta=23.8 rng=18.7
+    RANSAC: no candidates in theta window
+  run=54  event=37804
+    GMM  : theta=21.4 rng=11.5
+    RANSAC: no candidates in theta window
+  run=54  event=38869
+    GMM  : theta=23.6 rng=23.8
+    RANSAC: no candidates in theta window
+  run=54  event=39042
+    GMM  : theta=20.2 rng=25.1
+    RANSAC: no candidates in theta window
+  run=54  event=42782
+    GMM  : theta=24.9 rng=18.4
+    RANSAC: no candidates in theta window
+  run=54  event=45436
+    GMM  : theta=23.9 rng=22.2
+    RANSAC: no candidates in theta window
+  run=54  event=47956
+    GMM  : theta=21.9 rng=27.0
+    RANSAC: no candidates in theta window
+  run=54  event=48330
+    GMM  : theta=20.9 rng=19.8
+    RANSAC: no candidates in theta window
+  run=54  event=5445
+    GMM  : theta=21.4 rng=20.7
+    RANSAC: no candidates in theta window
+  run=54  event=53426
+    GMM  : theta=25.0 rng=17.2
+    RANSAC: no candidates in theta window
+  run=54  event=59424
+    GMM  : theta=24.5 rng=20.3
+    RANSAC: no candidates in theta window
+  run=54  event=60136
+    GMM  : theta=21.6 rng=23.2
+    RANSAC: no candidates in theta window
+  run=54  event=60438
+    GMM  : theta=23.8 rng=21.2
+    RANSAC: no candidates in theta window
+  run=54  event=6384
+    GMM  : theta=21.6 rng=23.9
+    RANSAC: no candidates in theta window
+  run=55  event=12996
+    GMM  : theta=20.0 rng=14.7
+    RANSAC: no candidates in theta window
+  run=55  event=13670
+    GMM  : theta=24.3 rng=20.9
+    RANSAC: no candidates in theta window
+  run=55  event=13740
+    GMM  : theta=21.3 rng=18.9
+    RANSAC: no candidates in theta window
+  run=55  event=14334
+    GMM  : theta=22.0 rng=19.4
+    RANSAC: no candidates in theta window
+  run=55  event=15247
+    GMM  : theta=20.3 rng=22.2
+    RANSAC: no candidates in theta window
+  run=55  event=15831
+    GMM  : theta=21.0 rng=16.9
+    RANSAC: no candidates in theta window
+  run=55  event=21393
+    GMM  : theta=21.7 rng=25.6
+    RANSAC: no candidates in theta window
+  run=55  event=23784
+    GMM  : theta=21.4 rng=24.2
+    RANSAC: no candidates in theta window
+  run=55  event=24984
+    GMM  : theta=22.1 rng=18.1
+    RANSAC: no candidates in theta window
+  run=55  event=25565
+    GMM  : theta=21.0 rng=23.9
+    RANSAC: no candidates in theta window
+  run=55  event=30145
+    GMM  : theta=21.4 rng=25.0
+    RANSAC: no candidates in theta window
+  run=55  event=31021
+    GMM  : theta=24.1 rng=25.4
+    RANSAC: no candidates in theta window
+  run=55  event=31924
+    GMM  : theta=24.6 rng=21.7
+    RANSAC: no candidates in theta window
+  run=55  event=31985
+    GMM  : theta=24.0 rng=21.8
+    RANSAC: no candidates in theta window
+  run=55  event=33612
+    GMM  : theta=20.3 rng=25.0
+    RANSAC: no candidates in theta window
+  run=55  event=34262
+    GMM  : theta=23.4 rng=20.6
+    RANSAC: no candidates in theta window
+  run=55  event=38672
+    GMM  : theta=20.7 rng=21.6
+    RANSAC: no candidates in theta window
+  run=55  event=38760
+    GMM  : theta=21.9 rng=16.8
+    RANSAC: no candidates in theta window
+  run=55  event=39170
+    GMM  : theta=23.2 rng=20.1
+    RANSAC: no candidates in theta window
+  run=55  event=39643
+    GMM  : theta=20.9 rng=26.6
+    RANSAC: no candidates in theta window
+  run=55  event=40807
+    GMM  : theta=21.0 rng=26.3
+    RANSAC: no candidates in theta window
+  run=55  event=51142
+    GMM  : theta=22.7 rng=21.7
+    RANSAC: no candidates in theta window
+  run=55  event=51237
+    GMM  : theta=23.5 rng=19.9
+    RANSAC: no candidates in theta window
+  run=55  event=5679
+    GMM  : theta=23.5 rng=14.6
+    RANSAC: no candidates in theta window
+  run=55  event=56030
+    GMM  : theta=23.5 rng=18.3
+    RANSAC: no candidates in theta window
+  run=55  event=58118
+    GMM  : theta=21.1 rng=17.8
+    RANSAC: no candidates in theta window
+  run=55  event=58925
+    GMM  : theta=20.6 rng=23.3
+    RANSAC: no candidates in theta window
+  run=55  event=60231
+    GMM  : theta=21.0 rng=23.7
+    RANSAC: no candidates in theta window
+  run=56  event=296
+    GMM  : theta=22.5 rng=18.5
+    RANSAC: no candidates in theta window
+  run=56  event=14781
+    GMM  : theta=22.9 rng=13.2
+    RANSAC: no candidates in theta window
+  run=56  event=16891
+    GMM  : theta=23.4 rng=19.3
+    RANSAC: no candidates in theta window
+  run=56  event=19276
+    GMM  : theta=24.5 rng=20.6
+    RANSAC: no candidates in theta window
+  run=56  event=21497
+    GMM  : theta=23.3 rng=23.4
+    RANSAC: no candidates in theta window
+  run=56  event=21511
+    GMM  : theta=24.3 rng=17.6
+    RANSAC: no candidates in theta window
+  run=56  event=22853
+    GMM  : theta=22.5 rng=22.9
+    RANSAC: no candidates in theta window
+  run=56  event=27057
+    GMM  : theta=24.5 rng=25.1
+    RANSAC: no candidates in theta window
+  run=56  event=27709
+    GMM  : theta=22.3 rng=13.7
+    RANSAC: no candidates in theta window
+  run=56  event=32281
+    GMM  : theta=21.6 rng=24.9
